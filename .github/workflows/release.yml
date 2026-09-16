@@ -18,6 +18,8 @@ jobs:
 
     steps:
       - name: Telegram — build started
+        continue-on-error: true
+        if: ${{ secrets.TG_BOT_TOKEN != '' }}
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TG_CHAT_ID }}
@@ -54,17 +56,19 @@ jobs:
             type=raw,value=latest
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Telegram — build succeeded
-        if: success()
+        continue-on-error: true
+        if: ${{ success() && secrets.TG_BOT_TOKEN != '' }}
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TG_CHAT_ID }}
@@ -76,7 +80,8 @@ jobs:
           format: markdown
 
       - name: Telegram — build failed
-        if: failure()
+        continue-on-error: true
+        if: ${{ failure() && secrets.TG_BOT_TOKEN != '' }}
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TG_CHAT_ID }}
@@ -90,6 +95,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    if: ${{ secrets.DEPLOY_HOST != '' }}
     permissions:
       contents: read
       packages: read
@@ -107,7 +113,8 @@ jobs:
             cd ${{ secrets.DEPLOY_PATH }} && docker compose up -d
 
       - name: Telegram — deploy succeeded
-        if: success()
+        continue-on-error: true
+        if: ${{ success() && secrets.TG_BOT_TOKEN != '' }}
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TG_CHAT_ID }}
@@ -119,7 +126,8 @@ jobs:
           format: markdown
 
       - name: Telegram — deploy failed
-        if: failure()
+        continue-on-error: true
+        if: ${{ failure() && secrets.TG_BOT_TOKEN != '' }}
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TG_CHAT_ID }}
