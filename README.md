@@ -82,7 +82,7 @@ On first visit to the Web UI, you'll be prompted to create an admin account (use
 ## Setup
 
 1. Open the Web UI at `http://localhost:5051` → **Аккаунты**
-2. Export your TikTok cookies via [EditThisCookie](https://chrome.google.com/webstore/detail/editthiscookie/fngmhnnpilhplaeedifhccceomclgfbg)
+2. Export your TikTok cookies via [CookieEditor](https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm)
 3. Add account (name + cookies JSON) — cookies are verified automatically
 4. Upload a video via the Web UI or API
 
