@@ -1,0 +1,18 @@
+services:
+  tiktok-uploader:
+    build: .
+    container_name: tiktok-uploader
+    ports:
+      - "5050:5000"  # API
+      - "5051:5001"  # Web UI
+      - "5901:5900"  # VNC
+    volumes:
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+    shm_size: "512m"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VNC_PASSWORD=1111
+      - DISPLAY=:99
+      - DEBUG=true
+      - DASHBOARD=true

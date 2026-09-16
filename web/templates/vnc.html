@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}VNC — TikTok Uploader{% endblock %}
+
+{% block content %}
+<h1 style="font-size:22px; font-weight:700; margin-bottom:24px;">VNC</h1>
+
+<div class="card">
+  <div class="card-title">Подключение</div>
+  <div style="font-size:14px; color:var(--text-muted); line-height:1.8;">
+    <p>VNC сервер запущен на порту <strong style="color:var(--text);">5900</strong> внутри контейнера.</p>
+    <p>Подключайтесь через любой VNC клиент:</p>
+    <code style="display:inline-block; margin-top:8px; padding:8px 14px; background:var(--surface2); border-radius:6px; font-size:13px; color:var(--text);">
+      localhost:5901
+    </code>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Буфер обмена</div>
+  <div style="display:flex; gap:12px; align-items:stretch;">
+    <textarea id="clipboard-text" rows="3" placeholder="Введите текст для отправки в буфер обмена контейнера…"
+      style="flex:1;"></textarea>
+    <button class="btn btn-primary" id="btn-clipboard" style="white-space:nowrap; align-self:flex-end;">Отправить</button>
+  </div>
+  <div id="clipboard-alert" style="margin-top:8px;"></div>
+  <div style="margin-top:10px; font-size:12px; color:var(--text-muted);">
+    После отправки вставьте текст через Ctrl+V в VNC окне.
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var btn = document.getElementById('btn-clipboard');
+  var txt = document.getElementById('clipboard-text');
+  var alertEl = document.getElementById('clipboard-alert');
+
+  btn.addEventListener('click', function() {
+    var text = txt.value;
+    if (!text) return;
+    btn.disabled = true;
+    fetch('/api/clipboard', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text: text})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      btn.disabled = false;
+      if (data.success) {
+        alertEl.innerHTML = '<div class="alert alert-success">' + data.message + '</div>';
+      } else {
+        alertEl.innerHTML = '<div class="alert alert-error">' + (data.error || 'Ошибка') + '</div>';
+      }
+      setTimeout(function() { alertEl.innerHTML = ''; }, 5000);
+    })
+    .catch(function(e) {
+      btn.disabled = false;
+      alertEl.innerHTML = '<div class="alert alert-error">' + e + '</div>';
+    });
+  });
+})();
+</script>
+{% endblock %}

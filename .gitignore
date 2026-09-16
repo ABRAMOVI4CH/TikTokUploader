@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+uploads/*
+!uploads/.gitkeep
+cookies.json
+data.db
+data.db-wal
+data.db-shm
+static/avatars/*
+!static/avatars/.gitkeep
+docs/

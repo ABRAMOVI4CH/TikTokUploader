@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% block title %}Аккаунты — TikTok Uploader{% endblock %}
+
+{% block head %}
+<style>
+  .account-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+  }
+  .account-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--surface2);
+    flex-shrink: 0;
+  }
+  .account-avatar-placeholder {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--surface2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .account-info { flex: 1; min-width: 0; }
+  .account-name { font-weight: 600; font-size: 15px; }
+  .account-username { font-size: 13px; color: var(--text-muted); }
+  .account-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px;
+    width: 100%;
+    max-width: 600px;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .modal h2 { font-size: 18px; margin-bottom: 20px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+  <h1 style="font-size:22px; font-weight:700;">Аккаунты ({{ accounts | length }})</h1>
+  <button class="btn btn-primary" id="btn-add">+ Добавить аккаунт</button>
+</div>
+
+<div id="accounts-alert"></div>
+
+{% if accounts %}
+  {% for acc in accounts %}
+  <div class="account-card" data-id="{{ acc.id }}">
+    {% if acc.avatar_path %}
+      <img class="account-avatar" src="/static/avatars/{{ acc.avatar_path }}" alt="">
+    {% else %}
+      <div class="account-avatar-placeholder">?</div>
+    {% endif %}
+    <div class="account-info">
+      <div class="account-name">{{ acc.name }}</div>
+      <div class="account-username">
+        {% if acc.tiktok_username %}@{{ acc.tiktok_username }}{% endif %}
+        {% if acc.tiktok_nickname %} &middot; {{ acc.tiktok_nickname }}{% endif %}
+        {% if not acc.tiktok_username and not acc.tiktok_nickname %}
+          <span style="color:var(--yellow);">Нет данных профиля</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="account-actions">
+      <button class="btn btn-secondary btn-delete" data-id="{{ acc.id }}" style="font-size:13px; padding:6px 14px; color:var(--red);">
+        Удалить
+      </button>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+  <div class="card">
+    <p style="color:var(--text-muted); font-size:14px;">Нет аккаунтов. Нажмите «+ Добавить аккаунт» чтобы начать.</p>
+  </div>
+{% endif %}
+
+<!-- Add account modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h2>Добавить аккаунт</h2>
+
+    <div id="modal-alert"></div>
+
+    <div class="form-group">
+      <label>Название</label>
+      <input type="text" id="acc-name" placeholder="Например: Основной аккаунт" />
+    </div>
+
+    <div class="form-group">
+      <label>Cookies (JSON)</label>
+      <textarea id="acc-cookies" rows="12"
+        style="font-family:monospace; font-size:13px;"
+        placeholder='Вставьте JSON массив кук из EditThisCookie...'></textarea>
+    </div>
+
+    <div style="font-size:12px; color:var(--text-muted); margin-bottom:16px;">
+      Куки будут проверены автоматически. Аккаунт добавится только если авторизация работает.
+    </div>
+
+    <div style="display:flex; gap:12px;">
+      <button class="btn btn-primary" id="btn-submit">Проверить и добавить</button>
+      <button class="btn btn-secondary" id="btn-cancel">Отмена</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var modal = document.getElementById('modal');
+  var alertBox = document.getElementById('accounts-alert');
+  var modalAlert = document.getElementById('modal-alert');
+
+  function showAlert(el, msg, ok) {
+    el.innerHTML = '<div class="alert alert-' + (ok ? 'success' : 'error') + '">' + msg + '</div>';
+    setTimeout(function() { el.innerHTML = ''; }, 6000);
+  }
+
+  document.getElementById('btn-add').addEventListener('click', function() {
+    modal.classList.add('open');
+  });
+
+  document.getElementById('btn-cancel').addEventListener('click', function() {
+    modal.classList.remove('open');
+    modalAlert.innerHTML = '';
+  });
+
+  modal.addEventListener('click', function(e) {
+    if (e.target === modal) {
+      modal.classList.remove('open');
+      modalAlert.innerHTML = '';
+    }
+  });
+
+  document.getElementById('btn-submit').addEventListener('click', function() {
+    var name = document.getElementById('acc-name').value.trim();
+    var raw = document.getElementById('acc-cookies').value.trim();
+
+    if (!name) { showAlert(modalAlert, 'Введите название.', false); return; }
+    if (!raw) { showAlert(modalAlert, 'Вставьте куки.', false); return; }
+
+    var cookies;
+    try {
+      cookies = JSON.parse(raw);
+      if (!Array.isArray(cookies)) { showAlert(modalAlert, 'Куки должны быть JSON массивом.', false); return; }
+    } catch(e) {
+      showAlert(modalAlert, 'Невалидный JSON: ' + e.message, false);
+      return;
+    }
+
+    var btn = this;
+    btn.disabled = true;
+    btn.textContent = 'Проверка…';
+    modalAlert.innerHTML = '<div class="alert alert-info">Проверяем куки и загружаем профиль… Это может занять 10-15 секунд.</div>';
+
+    fetch('/api/accounts', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name, cookies: cookies})
+    })
+    .then(function(r) { return r.json().then(function(d) { return {data: d, ok: r.ok}; }); })
+    .then(function(res) {
+      btn.disabled = false;
+      btn.textContent = 'Проверить и добавить';
+      if (res.ok) {
+        modal.classList.remove('open');
+        modalAlert.innerHTML = '';
+        showAlert(alertBox, 'Аккаунт добавлен: @' + (res.data.username || name), true);
+        setTimeout(function() { location.reload(); }, 1500);
+      } else {
+        showAlert(modalAlert, res.data.error || 'Ошибка', false);
+      }
+    })
+    .catch(function(e) {
+      btn.disabled = false;
+      btn.textContent = 'Проверить и добавить';
+      showAlert(modalAlert, 'Сетевая ошибка: ' + e, false);
+    });
+  });
+
+  // Delete buttons
+  document.querySelectorAll('.btn-delete').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      if (!confirm('Удалить аккаунт?')) return;
+      var id = this.dataset.id;
+      fetch('/api/accounts/' + id, {method: 'DELETE'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.success) {
+            location.reload();
+          } else {
+            showAlert(alertBox, data.error || 'Ошибка', false);
+          }
+        });
+    });
+  });
+})();
+</script>
+{% endblock %}

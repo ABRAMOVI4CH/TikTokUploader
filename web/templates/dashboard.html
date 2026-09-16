@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Дашборд — TikTok Uploader{% endblock %}
+
+{% block head %}
+<style>
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+  .stat-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1 style="font-size:22px; font-weight:700; margin-bottom:24px;">Дашборд</h1>
+
+{% set total = tasks | length %}
+{% set pending = tasks | selectattr('status', 'equalto', 'pending') | list | length %}
+{% set uploading = tasks | selectattr('status', 'equalto', 'uploading') | list | length %}
+{% set success = tasks | selectattr('status', 'equalto', 'success') | list | length %}
+{% set failed = tasks | selectattr('status', 'equalto', 'failed') | list | length %}
+
+<!-- Stats -->
+<div class="stats">
+  <div class="stat-card">
+    <div class="stat-value" style="color:var(--text);">{{ total }}</div>
+    <div class="stat-label">Всего задач</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color:var(--yellow);">{{ pending + uploading }}</div>
+    <div class="stat-label">В очереди</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color:var(--green);">{{ success }}</div>
+    <div class="stat-label">Загружено</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color:var(--red);">{{ failed }}</div>
+    <div class="stat-label">Ошибки</div>
+  </div>
+</div>
+
+<!-- Health + actions -->
+<div class="card" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;">
+  <div style="display:flex; gap:24px; align-items:center;">
+    <div>
+      {% if health.alive %}
+        <span class="dot dot-green"></span><span style="font-size:14px;">Браузер запущен</span>
+      {% else %}
+        <span class="dot dot-red"></span><span style="font-size:14px;">Браузер не доступен</span>
+      {% endif %}
+    </div>
+    {% if health.error %}
+    <span style="color:var(--red); font-size:13px;">{{ health.error }}</span>
+    {% endif %}
+  </div>
+  <div style="display:flex; gap:12px;">
+    <a href="{{ url_for('upload') }}" class="btn btn-primary">+ Загрузить видео</a>
+    <a href="{{ url_for('accounts') }}" class="btn btn-secondary">Аккаунты</a>
+  </div>
+</div>
+
+<!-- Tasks table -->
+<div class="card">
+  <div class="card-title">Задачи ({{ total }})</div>
+  {% if tasks %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Аккаунт</th>
+          <th>Файл</th>
+          <th>Описание</th>
+          <th>Статус</th>
+          <th>Сообщение</th>
+          <th>Создано</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for task in tasks %}
+        <tr>
+          <td style="font-family:monospace; font-size:12px; color:var(--text-muted);">
+            {{ task.id[:8] }}…
+          </td>
+          <td style="font-size:13px;">
+            {{ task.account_name or '—' }}
+          </td>
+          <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+            {{ task.filename }}
+          </td>
+          <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted);">
+            {{ task.description or '—' }}
+          </td>
+          <td>
+            <span class="badge badge-{{ task.status }}">{{ task.status }}</span>
+          </td>
+          <td style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--text-muted);">
+            {{ task.message }}
+          </td>
+          <td style="font-size:13px; color:var(--text-muted); white-space:nowrap;">
+            {{ task.created_at[:19].replace('T', ' ') }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p style="color:var(--text-muted); font-size:14px;">Задач ещё нет. <a href="{{ url_for('upload') }}">Загрузите первое видео</a>.</p>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  setTimeout(function() { location.reload(); }, 30000);
+</script>
+{% endblock %}

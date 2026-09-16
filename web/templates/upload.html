@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block title %}Загрузить видео — TikTok Uploader{% endblock %}
+
+{% block head %}
+<style>
+  /* Drop zone */
+  .drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 40px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    position: relative;
+  }
+  .drop-zone.over,
+  .drop-zone:hover {
+    border-color: var(--accent);
+    background: rgba(254,44,85,0.04);
+  }
+  .drop-zone input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+  .drop-icon {
+    font-size: 40px;
+    margin-bottom: 12px;
+    display: block;
+  }
+  .drop-label {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .drop-sub {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 6px;
+  }
+  .file-chosen {
+    margin-top: 12px;
+    font-size: 14px;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* Progress bar */
+  .progress-wrap {
+    margin-top: 12px;
+    height: 6px;
+    background: var(--surface2);
+    border-radius: 3px;
+    overflow: hidden;
+    display: none;
+  }
+  .progress-bar {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.3s;
+    border-radius: 3px;
+  }
+
+  /* Result box */
+  #result-box { margin-top: 16px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1 style="font-size:22px; font-weight:700; margin-bottom:24px;">Загрузить видео</h1>
+
+{% if error %}
+  <div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+{% if result %}
+  <div class="alert alert-success">
+    Видео поставлено в очередь! ID задачи: <strong>{{ result.task_id }}</strong>.
+    <a href="{{ url_for('dashboard') }}">Посмотреть статус</a>.
+  </div>
+{% endif %}
+
+<div class="card">
+  <form id="upload-form" method="POST" enctype="multipart/form-data">
+
+    <!-- Account selector -->
+    <div class="form-group">
+      <label>Аккаунт</label>
+      {% if accounts %}
+      <select name="account_id" id="account-select"
+        style="width:100%; background:var(--surface2); border:1px solid var(--border);
+               border-radius:6px; color:var(--text); font-size:14px; padding:10px 14px;
+               outline:none; cursor:pointer;">
+        <option value="">— Выберите аккаунт —</option>
+        {% for acc in accounts %}
+        <option value="{{ acc.id }}">
+          {{ acc.name }}{% if acc.tiktok_username %} (@{{ acc.tiktok_username }}){% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      {% else %}
+      <div style="padding:12px; background:rgba(254,44,85,0.06); border:1px solid rgba(254,44,85,0.2); border-radius:6px; font-size:14px;">
+        Нет аккаунтов. <a href="{{ url_for('accounts') }}">Добавьте аккаунт</a> перед загрузкой.
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- File picker / drop zone -->
+    <div class="form-group">
+      <label>Видео файл</label>
+      <div class="drop-zone" id="drop-zone">
+        <input type="file" name="video" id="file-input" accept="video/*" required />
+        <span class="drop-icon">&#127910;</span>
+        <div class="drop-label">Перетащите файл сюда или кликните для выбора</div>
+        <div class="drop-sub">MP4, MOV, AVI, MKV &mdash; до 4 ГБ</div>
+        <div class="file-chosen" id="file-chosen"></div>
+      </div>
+    </div>
+
+    <!-- Description -->
+    <div class="form-group">
+      <label>Описание / подпись</label>
+      <textarea name="description" id="description" rows="3"
+        placeholder="Введите описание видео…"></textarea>
+    </div>
+
+    <!-- Tags -->
+    <div class="form-group">
+      <label>Теги (через запятую)</label>
+      <input type="text" name="tags" id="tags"
+        placeholder="fyp, viral, trending" />
+      <div style="font-size:12px; color:var(--text-muted); margin-top:5px;">
+        Знак # добавляется автоматически
+      </div>
+    </div>
+
+    <!-- Progress bar (shown during XHR upload) -->
+    <div class="progress-wrap" id="progress-wrap">
+      <div class="progress-bar" id="progress-bar"></div>
+    </div>
+
+    <!-- Submit -->
+    <div style="display:flex; gap:12px; align-items:center; margin-top:8px;">
+      <button type="submit" class="btn btn-primary" id="submit-btn">
+        Загрузить в TikTok
+      </button>
+      <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Отмена</a>
+    </div>
+
+    <!-- Inline result -->
+    <div id="result-box"></div>
+  </form>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const fileInput = document.getElementById('file-input');
+  const dropZone  = document.getElementById('drop-zone');
+  const fileChosen = document.getElementById('file-chosen');
+  const form       = document.getElementById('upload-form');
+  const submitBtn  = document.getElementById('submit-btn');
+  const progressWrap = document.getElementById('progress-wrap');
+  const progressBar  = document.getElementById('progress-bar');
+  const resultBox    = document.getElementById('result-box');
+
+  // Show chosen filename.
+  fileInput.addEventListener('change', function() {
+    if (this.files.length > 0) {
+      fileChosen.textContent = '✓ ' + this.files[0].name;
+      dropZone.style.borderColor = 'var(--accent)';
+    }
+  });
+
+  // Drag-and-drop visual feedback.
+  dropZone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    dropZone.classList.add('over');
+  });
+  dropZone.addEventListener('dragleave', function() {
+    dropZone.classList.remove('over');
+  });
+  dropZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    dropZone.classList.remove('over');
+    if (e.dataTransfer.files.length > 0) {
+      fileInput.files = e.dataTransfer.files;
+      fileChosen.textContent = '✓ ' + e.dataTransfer.files[0].name;
+      dropZone.style.borderColor = 'var(--accent)';
+    }
+  });
+
+  // XHR upload with progress.
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    var accountSelect = document.getElementById('account-select');
+    if (!accountSelect || !accountSelect.value) {
+      showResult('Выберите аккаунт.', false);
+      return;
+    }
+    if (!fileInput.files.length) {
+      showResult('Выберите видео файл.', false);
+      return;
+    }
+
+    const fd = new FormData(form);
+    const xhr = new XMLHttpRequest();
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Отправка…';
+    progressWrap.style.display = 'block';
+
+    xhr.upload.addEventListener('progress', function(evt) {
+      if (evt.lengthComputable) {
+        const pct = Math.round(evt.loaded / evt.total * 100);
+        progressBar.style.width = pct + '%';
+      }
+    });
+
+    xhr.addEventListener('load', function() {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Загрузить в TikTok';
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (xhr.status === 200 || xhr.status === 202) {
+          showResult(
+            'Видео поставлено в очередь! ID задачи: <strong>' + data.task_id + '</strong>. ' +
+            '<a href="/">Посмотреть статус</a>.',
+            true
+          );
+          form.reset();
+          fileChosen.textContent = '';
+          dropZone.style.borderColor = '';
+          progressBar.style.width = '0%';
+        } else {
+          showResult('Ошибка: ' + (data.error || xhr.statusText), false);
+        }
+      } catch(err) {
+        showResult('Неожиданный ответ сервера.', false);
+      }
+    });
+
+    xhr.addEventListener('error', function() {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Загрузить в TikTok';
+      showResult('Сетевая ошибка — API сервер недоступен.', false);
+    });
+
+    xhr.open('POST', '/api/upload');
+    xhr.send(fd);
+  });
+
+  function showResult(msg, ok) {
+    resultBox.innerHTML = '<div class="alert alert-' + (ok ? 'success' : 'error') + '">' + msg + '</div>';
+  }
+})();
+</script>
+{% endblock %}
