@@ -115,7 +115,7 @@ def add_task(task_id: str, account_id: int, filename: str,
     conn = get_db()
     conn.execute(
         "INSERT INTO tasks (id, account_id, status, filename, description, tags, message, created_at, updated_at) "
-        "VALUES (?, ?, 'pending', ?, ?, ?, 'Queued for upload.', ?, ?)",
+        "VALUES (?, ?, 'IN_QUEUE', ?, ?, ?, 'Queued for upload.', ?, ?)",
         (task_id, account_id, filename, description, tags, now, now),
     )
     conn.commit()

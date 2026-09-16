@@ -16,3 +16,4 @@ services:
       - DISPLAY=:99
       - DEBUG=true
       - DASHBOARD=true
+      - SWAGGER=true

@@ -35,10 +35,10 @@
 <h1 style="font-size:22px; font-weight:700; margin-bottom:24px;">Дашборд</h1>
 
 {% set total = tasks | length %}
-{% set pending = tasks | selectattr('status', 'equalto', 'pending') | list | length %}
-{% set uploading = tasks | selectattr('status', 'equalto', 'uploading') | list | length %}
-{% set success = tasks | selectattr('status', 'equalto', 'success') | list | length %}
-{% set failed = tasks | selectattr('status', 'equalto', 'failed') | list | length %}
+{% set in_queue = tasks | selectattr('status', 'equalto', 'IN_QUEUE') | list | length %}
+{% set in_progress = tasks | selectattr('status', 'equalto', 'IN_PROGRESS') | list | length %}
+{% set success = tasks | selectattr('status', 'equalto', 'SUCCESS') | list | length %}
+{% set failed = tasks | selectattr('status', 'equalto', 'FAIL') | list | length %}
 
 <!-- Stats -->
 <div class="stats">
@@ -47,7 +47,7 @@
     <div class="stat-label">Всего задач</div>
   </div>
   <div class="stat-card">
-    <div class="stat-value" style="color:var(--yellow);">{{ pending + uploading }}</div>
+    <div class="stat-value" style="color:var(--yellow);">{{ in_queue + in_progress }}</div>
     <div class="stat-label">В очереди</div>
   </div>
   <div class="stat-card">
