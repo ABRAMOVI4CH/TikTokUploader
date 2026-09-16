@@ -7,9 +7,11 @@ services:
       - "5051:5001"  # Web UI
       - "5901:5900"  # VNC
     volumes:
+      - ./data:/app/data
       - ./uploads:/app/uploads
+      - ./profiles:/app/profiles
     restart: unless-stopped
-    shm_size: "512m"
+    shm_size: "2g"
     environment:
       - PYTHONUNBUFFERED=1
       - VNC_PASSWORD=1111
@@ -17,4 +19,6 @@ services:
       - DEBUG=true
       - DASHBOARD=true
       - SWAGGER=true
+      - DB_DIR=/app/data
+      - CHROME_PROFILES_DIR=/app/profiles
       - API_SECRET=

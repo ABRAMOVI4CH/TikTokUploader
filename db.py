@@ -7,7 +7,10 @@ from datetime import datetime
 
 from werkzeug.security import generate_password_hash, check_password_hash
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
+DB_PATH = os.path.join(
+    os.environ.get("DB_DIR", os.path.dirname(os.path.abspath(__file__))),
+    "data.db",
+)
 
 
 def get_db() -> sqlite3.Connection:

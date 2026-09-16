@@ -179,12 +179,13 @@
     var btn = this;
     btn.disabled = true;
     btn.textContent = 'Проверка…';
-    modalAlert.innerHTML = '<div class="alert alert-info">Проверяем куки и загружаем профиль… Это может занять 10-15 секунд.</div>';
+    modalAlert.innerHTML = '<div class="alert alert-info">Запускаем браузер, проверяем куки и загружаем профиль… Это может занять до 60 секунд.</div>';
 
     fetch('/api/accounts', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name: name, cookies: cookies})
+      body: JSON.stringify({name: name, cookies: cookies}),
+      signal: AbortSignal.timeout(120000)
     })
     .then(function(r) { return r.json().then(function(d) { return {data: d, ok: r.ok}; }); })
     .then(function(res) {

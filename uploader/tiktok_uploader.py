@@ -1,11 +1,16 @@
 """
 TikTok video uploader using Selenium.
 Handles cookie-based authentication and video upload via the TikTok web interface.
+Each account gets an isolated Chrome profile (user-data-dir).
+Browsers are created on demand and closed after each operation.
 """
 
-import base64
+import glob as globmod
 import logging
 import os
+import shutil
+import signal
+import threading
 import time
 from pathlib import Path
 from urllib.request import urlopen
@@ -29,7 +34,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TikTokUploader")
 
-UPLOAD_URL = "https://www.tiktok.com/creator#/upload?scene=creator_center"
+UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload"
 TIKTOK_HOME = "https://www.tiktok.com"
 
 WAIT_SHORT = 10
@@ -39,15 +44,29 @@ WAIT_LONG = 120
 
 class TikTokUploader:
     def __init__(self):
-        self.driver = None
-        self._init_driver()
+        self._profiles_dir = os.environ.get(
+            "CHROME_PROFILES_DIR",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "profiles"),
+        )
+        os.makedirs(self._profiles_dir, exist_ok=True)
+        self._active_drivers: dict[int, webdriver.Chrome] = {}
+        self._lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Profile paths
+    # ------------------------------------------------------------------
+
+    def _profile_dir(self, account_id: int) -> str:
+        return os.path.join(self._profiles_dir, str(account_id))
+
+    def _temp_profile_dir(self, temp_id: int) -> str:
+        return os.path.join(self._profiles_dir, f"_tmp_{abs(temp_id)}")
 
     # ------------------------------------------------------------------
     # Driver lifecycle
     # ------------------------------------------------------------------
 
-    def _init_driver(self):
-        logger.info("Initialising Chrome driver…")
+    def _build_options(self, profile_dir: str | None = None) -> ChromeOptions:
         options = ChromeOptions()
         if not os.environ.get("DISPLAY"):
             options.add_argument("--headless=new")
@@ -57,6 +76,9 @@ class TikTokUploader:
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--lang=en-US")
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-setuid-sandbox")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
         options.add_argument(
@@ -64,45 +86,58 @@ class TikTokUploader:
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/131.0.0.0 Safari/537.36"
         )
+        if profile_dir is not None:
+            # Remove all stale lock files that prevent Chrome from starting
+            for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
+                lock_path = os.path.join(profile_dir, lock_name)
+                if os.path.exists(lock_path) or os.path.islink(lock_path):
+                    try:
+                        os.remove(lock_path)
+                        logger.info("Removed stale %s: %s", lock_name, lock_path)
+                    except OSError:
+                        pass
+            options.add_argument(f"--user-data-dir={profile_dir}")
 
         chrome_binary = os.environ.get("CHROME_BINARY")
         if chrome_binary:
             options.binary_location = chrome_binary
 
+        return options
+
+    def _create_driver(self, profile_dir: str | None = None) -> webdriver.Chrome:
+        logger.info("Creating Chrome driver (profile=%s)…", profile_dir)
+        options = self._build_options(profile_dir)
         driver_path = os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver")
         service = Service(executable_path=driver_path)
 
-        try:
-            self.driver = webdriver.Chrome(service=service, options=options)
-            self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            })
-            logger.info("Chrome driver started successfully.")
-        except Exception as exc:
-            logger.error("Failed to start Chrome driver: %s", exc)
-            raise
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
+        logger.info("Chrome driver started.")
+        return driver
 
-    def quit(self):
-        if self.driver:
+    def _close_driver(self, driver: webdriver.Chrome):
+        try:
+            pid = driver.service.process.pid
+            driver.quit()
+        except Exception as exc:
+            logger.warning("Error closing driver: %s", exc)
+            # Force-kill the chromedriver process if quit() failed
             try:
-                self.driver.quit()
-                logger.info("Chrome driver closed.")
-            except Exception as exc:
-                logger.warning("Error while closing driver: %s", exc)
-            finally:
-                self.driver = None
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Cookie injection
     # ------------------------------------------------------------------
 
-    def inject_cookies(self, cookies: list) -> bool:
-        """Inject a list of cookie dicts into the browser. Returns True if session valid."""
-        self.driver.get(TIKTOK_HOME)
+    def inject_cookies(self, driver: webdriver.Chrome, cookies: list) -> bool:
+        driver.get(TIKTOK_HOME)
         time.sleep(2)
 
-        # Clear existing cookies first
-        self.driver.delete_all_cookies()
+        driver.delete_all_cookies()
         time.sleep(0.5)
 
         injected = 0
@@ -137,23 +172,20 @@ class TikTokUploader:
                 continue
 
             try:
-                self.driver.add_cookie(clean)
+                driver.add_cookie(clean)
                 injected += 1
             except Exception as exc:
                 logger.debug("Skipped cookie %s: %s", cookie.get("name"), exc)
 
         logger.info("Injected %d cookies.", injected)
-        self.driver.refresh()
+        driver.refresh()
         time.sleep(3)
-        return self._is_logged_in()
+        return self._is_logged_in(driver)
 
-    def _is_logged_in(self) -> bool:
+    def _is_logged_in(self, driver: webdriver.Chrome) -> bool:
         try:
-            browser_cookies = self.driver.get_cookies()
-            cookie_names = {c["name"] for c in browser_cookies}
-            if "sessionid" in cookie_names or "sid_tt" in cookie_names:
-                return True
-            return False
+            cookie_names = {c["name"] for c in driver.get_cookies()}
+            return "sessionid" in cookie_names or "sid_tt" in cookie_names
         except Exception:
             return False
 
@@ -163,55 +195,89 @@ class TikTokUploader:
 
     def verify_account(self, cookies: list) -> dict:
         """
-        Inject cookies, verify login, and scrape TikTok profile info.
-        Returns dict with keys: valid, username, nickname, avatar_url.
+        Create a temp browser with a temp profile, inject cookies, verify,
+        scrape profile info, then close browser. Profile dir is kept so
+        cookies persist for later use.
+        Returns: valid, username, nickname, avatar_url, temp_id.
         """
-        ok = self.inject_cookies(cookies)
-        if not ok:
-            return {"valid": False, "username": "", "nickname": "", "avatar_url": ""}
+        import random
+        temp_id = random.randint(100_000, 999_999)
+        profile_dir = self._temp_profile_dir(temp_id)
+        os.makedirs(profile_dir, exist_ok=True)
 
-        username = ""
-        nickname = ""
-        avatar_url = ""
-
+        driver = self._create_driver(profile_dir)
         try:
-            time.sleep(2)
-            # Parse __UNIVERSAL_DATA_FOR_REHYDRATION__ → webapp.app-context → user
-            user_info = self.driver.execute_script("""
-                try {
-                    var el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
-                    if (el) {
-                        var data = JSON.parse(el.textContent);
-                        var user = data.__DEFAULT_SCOPE__['webapp.app-context'].user;
-                        return {
-                            username: user.uniqueId || '',
-                            nickname: user.nickName || '',
-                            avatar: (user.avatarUri && user.avatarUri[0]) || ''
-                        };
-                    }
-                } catch(e) {}
-                return null;
-            """)
+            ok = self.inject_cookies(driver, cookies)
+            if not ok:
+                self._close_driver(driver)
+                shutil.rmtree(profile_dir, ignore_errors=True)
+                return {"valid": False, "username": "", "nickname": "", "avatar_url": "", "temp_id": None}
 
-            if user_info:
-                username = user_info.get("username", "")
-                nickname = user_info.get("nickname", "")
-                avatar_url = user_info.get("avatar", "")
+            username = ""
+            nickname = ""
+            avatar_url = ""
 
-            logger.info("Verified account: @%s (%s)", username, nickname)
+            try:
+                time.sleep(2)
+                user_info = driver.execute_script("""
+                    try {
+                        var el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+                        if (el) {
+                            var data = JSON.parse(el.textContent);
+                            var user = data.__DEFAULT_SCOPE__['webapp.app-context'].user;
+                            return {
+                                username: user.uniqueId || '',
+                                nickname: user.nickName || '',
+                                avatar: (user.avatarUri && user.avatarUri[0]) || ''
+                            };
+                        }
+                    } catch(e) {}
+                    return null;
+                """)
 
-        except Exception as exc:
-            logger.warning("Could not scrape profile info: %s", exc)
+                if user_info:
+                    username = user_info.get("username", "")
+                    nickname = user_info.get("nickname", "")
+                    avatar_url = user_info.get("avatar", "")
 
-        return {
-            "valid": True,
-            "username": username,
-            "nickname": nickname,
-            "avatar_url": avatar_url,
-        }
+                logger.info("Verified account: @%s (%s)", username, nickname)
+
+            except Exception as exc:
+                logger.warning("Could not scrape profile info: %s", exc)
+
+            return {
+                "valid": True,
+                "username": username,
+                "nickname": nickname,
+                "avatar_url": avatar_url,
+                "temp_id": temp_id,
+            }
+        finally:
+            # Always close browser — cookies are saved in profile dir
+            self._close_driver(driver)
+
+    def save_profile(self, temp_id: int, account_id: int):
+        """Rename temp profile dir to the real account_id profile dir."""
+        old_dir = self._temp_profile_dir(temp_id)
+        new_dir = self._profile_dir(account_id)
+        if not os.path.isdir(old_dir):
+            return
+        if os.path.isdir(new_dir):
+            shutil.rmtree(new_dir, ignore_errors=True)
+        try:
+            os.rename(old_dir, new_dir)
+            logger.info("Profile saved: %s → %s", old_dir, new_dir)
+        except OSError as exc:
+            logger.warning("Could not rename profile: %s", exc)
+
+    def delete_profile(self, account_id: int):
+        """Delete account's profile directory."""
+        profile_dir = self._profile_dir(account_id)
+        if os.path.isdir(profile_dir):
+            shutil.rmtree(profile_dir, ignore_errors=True)
+            logger.info("Profile deleted for account %d.", account_id)
 
     def download_avatar(self, avatar_url: str, save_path: str) -> bool:
-        """Download avatar image to local path."""
         if not avatar_url:
             return False
         try:
@@ -231,13 +297,16 @@ class TikTokUploader:
     # ------------------------------------------------------------------
 
     def check_status(self) -> dict:
-        if not self.driver:
-            return {"alive": False}
-        try:
-            _ = self.driver.title
-            return {"alive": True}
-        except WebDriverException:
-            return {"alive": False}
+        profiles = [
+            d for d in os.listdir(self._profiles_dir)
+            if os.path.isdir(os.path.join(self._profiles_dir, d)) and not d.startswith("_tmp_")
+        ]
+        active = len(self._active_drivers)
+        return {
+            "alive": True,
+            "accounts_with_profiles": len(profiles),
+            "active_uploads": active,
+        }
 
     # ------------------------------------------------------------------
     # Video upload
@@ -247,6 +316,7 @@ class TikTokUploader:
         self,
         video_path: str,
         description: str,
+        account_id: int,
         cookies: list,
         tags: list[str] | None = None,
     ) -> dict:
@@ -254,64 +324,138 @@ class TikTokUploader:
         if not os.path.isfile(video_path):
             return {"status": "failed", "message": f"Video file not found: {video_path}"}
 
-        logger.info("Starting upload for: %s", video_path)
+        # TikTok requires lowercase file extension
+        ext = os.path.splitext(video_path)[1]
+        if ext != ext.lower():
+            new_path = os.path.splitext(video_path)[0] + ext.lower()
+            shutil.copy2(video_path, new_path)
+            logger.info("Copied to lowercase extension: %s → %s", video_path, new_path)
+            video_path = new_path
+
+        profile_dir = self._profile_dir(account_id)
+        os.makedirs(profile_dir, exist_ok=True)
+
+        logger.info("Starting upload for account %d: %s", account_id, video_path)
+
+        driver = self._create_driver(profile_dir)
+        with self._lock:
+            self._active_drivers[account_id] = driver
 
         try:
-            # Step 0 — Inject cookies
+            # Step 0 — Inject cookies to ensure session is valid
             logger.info("Step 0: Injecting cookies…")
-            ok = self.inject_cookies(cookies)
+            ok = self.inject_cookies(driver, cookies)
             if not ok:
                 return {"status": "failed", "message": "Cookie injection failed — not logged in."}
 
             # Step 1 — Navigate to upload page
             logger.info("Step 1: Navigating to upload page…")
-            self.driver.get(UPLOAD_URL)
+            driver.get(UPLOAD_URL)
             time.sleep(5)
 
-            # Step 2 — Send video file
+            # Step 2 — Send video file via CDP
             logger.info("Step 2: Sending video file…")
-            wait = WebDriverWait(self.driver, WAIT_MEDIUM)
+            wait = WebDriverWait(driver, WAIT_MEDIUM)
+
             file_input = wait.until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="file"]'))
             )
-            file_input.send_keys(video_path)
+
+            # Make visible and remove accept restriction
+            driver.execute_script("""
+                var el = arguments[0];
+                el.style.display = 'block';
+                el.style.opacity = '1';
+                el.style.position = 'fixed';
+                el.style.top = '0';
+                el.style.left = '0';
+                el.style.width = '200px';
+                el.style.height = '50px';
+                el.style.zIndex = '99999';
+                el.removeAttribute('accept');
+            """, file_input)
+            time.sleep(0.5)
+
+            # Try CDP first, then send_keys as fallback
+            try:
+                logger.info("Uploading file via CDP…")
+                result = driver.execute_cdp_cmd("Runtime.evaluate", {
+                    "expression": "document.querySelector('input[type=\"file\"]')",
+                    "returnByValue": False,
+                })
+                remote_object_id = result["result"]["objectId"]
+                dom_node = driver.execute_cdp_cmd("DOM.describeNode", {
+                    "objectId": remote_object_id,
+                })
+                backend_node_id = dom_node["node"]["backendNodeId"]
+                driver.execute_cdp_cmd("DOM.setFileInputFiles", {
+                    "files": [video_path],
+                    "backendNodeId": backend_node_id,
+                })
+                logger.info("CDP file set done.")
+            except Exception as exc:
+                logger.warning("CDP upload failed: %s, trying send_keys…", exc)
+                file_input = driver.find_element(By.CSS_SELECTOR, 'input[type="file"]')
+                file_input.send_keys(video_path)
+
+            # Dispatch events (React needs them)
+            time.sleep(1)
+            driver.execute_script("""
+                var el = document.querySelector('input[type="file"]');
+                if (el) {
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            """)
             logger.info("File sent: %s", video_path)
 
-            # Step 3 — Wait for caption editor
-            logger.info("Step 3: Waiting for video to process…")
-            wait_long = WebDriverWait(self.driver, WAIT_LONG)
-            wait_long.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-e2e="caption_container"]'))
-            )
+            # Step 3 — Wait for caption editor to appear (= TikTok accepted the file)
+            logger.info("Step 3: Waiting for video to be accepted…")
+            wait_long = WebDriverWait(driver, WAIT_LONG)
+            caption_selectors = [
+                '[contenteditable="true"]',
+                '[data-e2e="caption_container"]',
+                '.public-DraftEditor-content[contenteditable="true"]',
+            ]
+            caption_found = False
+            for sel in caption_selectors:
+                try:
+                    wait_long.until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
+                    caption_found = True
+                    logger.info("Caption editor appeared (selector: %s) — file accepted!", sel)
+                    break
+                except TimeoutException:
+                    continue
+            if not caption_found:
+                return {"status": "failed", "message": "Video file was not accepted — caption editor never appeared."}
             time.sleep(3)
 
             # Step 4 — Dismiss joyride
-            self._dismiss_joyride()
+            self._dismiss_joyride(driver)
 
-            # Step 5 — Fill caption
-            logger.info("Step 5: Filling description…")
+            # Step 6 — Fill caption
+            logger.info("Step 6: Filling description…")
             full_caption = description
             if tags:
                 hashtags = " ".join(f"#{t.lstrip('#')}" for t in tags)
                 full_caption = f"{description} {hashtags}"
-            self._fill_caption(full_caption)
+            self._fill_caption(driver, full_caption)
 
-            # Step 6 — Dismiss content-checks modal
-            self._dismiss_content_checks_modal()
+            # Step 7 — Dismiss content-checks modal
+            self._dismiss_content_checks_modal(driver)
 
-            # Step 7 — Click Post
-            logger.info("Step 7: Clicking Post button…")
-            posted = self._click_post()
+            # Step 8 — Click Post
+            logger.info("Step 8: Clicking Post button…")
+            posted = self._click_post(driver)
             if not posted:
                 return {"status": "failed", "message": "Could not click Post button."}
 
-            # Modal may appear after clicking Post
             time.sleep(2)
-            self._dismiss_content_checks_modal()
+            self._dismiss_content_checks_modal(driver)
 
-            # Step 8 — Wait for success
-            logger.info("Step 8: Waiting for success confirmation…")
-            success = self._wait_for_success()
+            # Step 9 — Wait for success
+            logger.info("Step 9: Waiting for success confirmation…")
+            success = self._wait_for_success(driver)
             if success:
                 logger.info("Upload successful!")
                 return {"status": "success", "message": "Video uploaded successfully."}
@@ -324,21 +468,48 @@ class TikTokUploader:
         except Exception as exc:
             logger.exception("Unhandled error during upload: %s", exc)
             return {"status": "failed", "message": f"Unexpected error: {exc}"}
+        finally:
+            with self._lock:
+                self._active_drivers.pop(account_id, None)
+            self._close_driver(driver)
+
+    # ------------------------------------------------------------------
+    # Clipboard (uses any active upload browser or creates a temp one)
+    # ------------------------------------------------------------------
+
+    def get_any_driver(self) -> webdriver.Chrome | None:
+        for driver in self._active_drivers.values():
+            try:
+                _ = driver.title
+                return driver
+            except WebDriverException:
+                continue
+        return None
+
+    def quit(self):
+        with self._lock:
+            for driver in self._active_drivers.values():
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+            self._active_drivers.clear()
+        logger.info("All active drivers closed.")
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _dismiss_joyride(self):
+    def _dismiss_joyride(self, driver: webdriver.Chrome):
         try:
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            buttons = driver.find_elements(By.TAG_NAME, "button")
             for btn in buttons:
                 if btn.text.strip().lower() in ("got it", "skip", "next", "close"):
-                    self.driver.execute_script("arguments[0].click();", btn)
+                    driver.execute_script("arguments[0].click();", btn)
                     logger.info("Dismissed joyride: '%s'", btn.text.strip())
                     time.sleep(1)
                     break
-            self.driver.execute_script("""
+            driver.execute_script("""
                 document.querySelectorAll('.react-joyride__overlay').forEach(e => e.remove());
                 document.querySelectorAll('[class*="joyride"]').forEach(e => {
                     if (e.style) e.style.display = 'none';
@@ -348,44 +519,62 @@ class TikTokUploader:
         except Exception as exc:
             logger.debug("Joyride dismiss: %s", exc)
 
-    def _dismiss_content_checks_modal(self):
+    def _dismiss_content_checks_modal(self, driver: webdriver.Chrome):
         try:
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
+            buttons = driver.find_elements(By.TAG_NAME, "button")
             for btn in buttons:
                 txt = btn.text.strip().lower()
                 if txt in ("turn on", "cancel"):
-                    self.driver.execute_script("arguments[0].click();", btn)
+                    driver.execute_script("arguments[0].click();", btn)
                     logger.info("Dismissed content-checks modal: '%s'", btn.text.strip())
                     time.sleep(1)
                     return
-            close_btns = self.driver.find_elements(
+            close_btns = driver.find_elements(
                 By.CSS_SELECTOR, '[aria-label="Close"], [aria-label="close"]'
             )
             for btn in close_btns:
-                self.driver.execute_script("arguments[0].click();", btn)
+                driver.execute_script("arguments[0].click();", btn)
                 time.sleep(1)
                 return
         except Exception as exc:
             logger.debug("Content-checks modal dismiss: %s", exc)
 
-    def _fill_caption(self, text: str):
-        wait = WebDriverWait(self.driver, WAIT_MEDIUM)
-        try:
-            editor = wait.until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, '.public-DraftEditor-content[contenteditable="true"]')
+    def _fill_caption(self, driver: webdriver.Chrome, text: str):
+        wait = WebDriverWait(driver, WAIT_MEDIUM)
+        editor = None
+
+        # TikTok Studio uses div[role="combobox"][contenteditable="true"] for description
+        selectors = [
+            '[role="combobox"][contenteditable="true"]',
+            '.public-DraftEditor-content[contenteditable="true"]',
+            '[contenteditable="true"]',
+        ]
+        for sel in selectors:
+            try:
+                editor = wait.until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
                 )
-            )
-            self.driver.execute_script("arguments[0].click();", editor)
+                logger.info("Caption editor found: %s", sel)
+                break
+            except TimeoutException:
+                continue
+
+        if not editor:
+            logger.error("No caption editor found.")
+            return
+
+        try:
+            driver.execute_script("arguments[0].click();", editor)
             time.sleep(0.5)
-            self.driver.execute_script("""
+            # Clear existing text and type new
+            driver.execute_script("""
                 var editor = arguments[0];
                 editor.focus();
                 document.execCommand('selectAll', false, null);
                 document.execCommand('delete', false, null);
             """, editor)
             time.sleep(0.3)
-            self.driver.execute_script("""
+            driver.execute_script("""
                 var editor = arguments[0];
                 editor.focus();
                 document.execCommand('insertText', false, arguments[1]);
@@ -393,12 +582,12 @@ class TikTokUploader:
             time.sleep(0.5)
             logger.info("Caption filled: %s", text[:60])
         except Exception as exc:
-            logger.error("Failed to fill caption: %s", exc)
+            logger.error("Failed to fill caption via execCommand: %s", exc)
             try:
-                editor = self.driver.find_element(
-                    By.CSS_SELECTOR, '.public-DraftEditor-content[contenteditable="true"]'
+                editor = driver.find_element(
+                    By.CSS_SELECTOR, '[role="combobox"][contenteditable="true"]'
                 )
-                self.driver.execute_script("arguments[0].click();", editor)
+                driver.execute_script("arguments[0].click();", editor)
                 time.sleep(0.3)
                 editor.send_keys(Keys.CONTROL + "a")
                 editor.send_keys(Keys.DELETE)
@@ -406,46 +595,80 @@ class TikTokUploader:
             except Exception as exc2:
                 logger.error("Caption fallback failed: %s", exc2)
 
-    def _click_post(self) -> bool:
-        wait = WebDriverWait(self.driver, WAIT_MEDIUM)
+    def _is_post_button_disabled(self, driver: webdriver.Chrome, btn) -> bool:
+        """Check if Post button is disabled via attribute, aria, or CSS class."""
         try:
-            btn = wait.until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, '[data-e2e="post_video_button"]')
-                )
-            )
-            self.driver.execute_script("arguments[0].scrollIntoView(true);", btn)
-            time.sleep(0.5)
-            self.driver.execute_script("arguments[0].click();", btn)
-            logger.info("Post button clicked (data-e2e).")
-            return True
-        except (TimeoutException, NoSuchElementException):
-            pass
-
-        try:
-            buttons = self.driver.find_elements(By.TAG_NAME, "button")
-            for btn in buttons:
-                txt = btn.text.strip().lower()
-                if txt in ("post", "publish"):
-                    self.driver.execute_script("arguments[0].click();", btn)
-                    logger.info("Post button clicked by text: '%s'", txt)
-                    return True
+            return driver.execute_script("""
+                var btn = arguments[0];
+                if (btn.disabled) return true;
+                if (btn.getAttribute('aria-disabled') === 'true') return true;
+                var cls = btn.className || '';
+                if (cls.includes('disabled') || cls.includes('Disabled')) return true;
+                var style = window.getComputedStyle(btn);
+                if (style.pointerEvents === 'none') return true;
+                if (style.opacity && parseFloat(style.opacity) < 0.5) return true;
+                return false;
+            """, btn)
         except Exception:
-            pass
+            return True
 
-        logger.error("Post button not found.")
+    def _click_post(self, driver: webdriver.Chrome) -> bool:
+        # Wait for Post button to exist and become enabled
+        logger.info("Waiting for Post button to become clickable…")
+        for attempt in range(60):
+            btn = None
+            # Try data-e2e selectors
+            for selector in ('[data-e2e="post_video_button"]', '[data-e2e="post_button"]'):
+                try:
+                    btn = driver.find_element(By.CSS_SELECTOR, selector)
+                    break
+                except NoSuchElementException:
+                    continue
+
+            # Fallback: find by text
+            if btn is None:
+                try:
+                    for b in driver.find_elements(By.TAG_NAME, "button"):
+                        if b.text.strip().lower() in ("post", "publish"):
+                            btn = b
+                            break
+                except Exception:
+                    pass
+
+            if btn is None:
+                logger.debug("Post button not found yet (attempt %d)", attempt)
+                time.sleep(5)
+                continue
+
+            if self._is_post_button_disabled(driver, btn):
+                logger.info("Post button disabled, waiting… (attempt %d)", attempt)
+                time.sleep(5)
+                continue
+
+            logger.info("Post button is enabled (attempt %d), clicking…", attempt)
+            driver.execute_script("arguments[0].scrollIntoView(true);", btn)
+            time.sleep(0.5)
+            driver.execute_script("arguments[0].click();", btn)
+            logger.info("Post button clicked.")
+            return True
+
+        logger.error("Post button not found or stayed disabled for 5 min.")
         return False
 
-    def _wait_for_success(self) -> bool:
+    def _wait_for_success(self, driver: webdriver.Chrome) -> bool:
         for i in range(12):
             time.sleep(5)
             try:
-                src = self.driver.page_source.lower()
-                url = self.driver.current_url
-                if any(w in src for w in ("uploaded", "your video is being", "manage your posts",
-                                           "successfully", "being processed", "being uploaded")):
+                url = driver.current_url
+                # TikTok Studio redirects to /tiktokstudio/content on success
+                if "/tiktokstudio/content" in url:
                     return True
                 if "upload" not in url:
+                    return True
+                src = driver.page_source.lower()
+                if any(w in src for w in ("uploaded", "your video is being", "manage your posts",
+                                           "successfully", "being processed", "being uploaded",
+                                           "post published", "content under review")):
                     return True
             except Exception:
                 pass

@@ -55,7 +55,8 @@ ns_auth = api.namespace("auth", path="/api/auth", description="Authentication")
 # ------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
-AVATARS_DIR = os.path.join(BASE_DIR, "static", "avatars")
+DATA_DIR = os.environ.get("DB_DIR", BASE_DIR)
+AVATARS_DIR = os.path.join(DATA_DIR, "avatars")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(AVATARS_DIR, exist_ok=True)
 
@@ -216,6 +217,10 @@ class AccountList(Resource):
             avatar_path=avatar_path,
         )
 
+        # Rename temp profile dir to real account_id
+        if result.get("temp_id") is not None:
+            uploader.save_profile(result["temp_id"], account_id)
+
         return {
             "success": True,
             "account_id": account_id,
@@ -279,6 +284,11 @@ class AccountDetail(Resource):
                             os.remove(old)
                     updates["avatar_path"] = avatar_filename
 
+            # Replace old profile with new verified one
+            if result.get("temp_id") is not None:
+                uploader.delete_profile(account_id)
+                uploader.save_profile(result["temp_id"], account_id)
+
         if updates:
             update_account(account_id, **updates)
 
@@ -295,6 +305,10 @@ class AccountDetail(Resource):
             p = os.path.join(AVATARS_DIR, account["avatar_path"])
             if os.path.exists(p):
                 os.remove(p)
+        try:
+            get_uploader().delete_profile(account_id)
+        except Exception:
+            pass
         delete_account(account_id)
         return {"success": True}
 
@@ -320,11 +334,11 @@ upload_parser.add_argument("tags", location="form", type=str, default="", help="
 
 
 def _do_upload(task_id: str, video_path: str, description: str,
-               tags: list[str], cookies: list):
+               tags: list[str], account_id: int, cookies: list):
     update_task(task_id, status=Status.IN_PROGRESS, message="Upload in progress…")
     try:
         uploader = get_uploader()
-        result = uploader.upload_video(video_path, description, cookies, tags)
+        result = uploader.upload_video(video_path, description, account_id, cookies, tags)
         final_status = Status.SUCCESS if result["status"] == "success" else Status.FAIL
         update_task(task_id, status=final_status, message=result["message"])
     except Exception as exc:
@@ -376,7 +390,7 @@ class JobList(Resource):
 
         t = threading.Thread(
             target=_do_upload,
-            args=(task_id, saved_path, description, tags, account["cookies"]),
+            args=(task_id, saved_path, description, tags, account_id, account["cookies"]),
             daemon=True,
         )
         t.start()
@@ -430,7 +444,7 @@ def legacy_upload():
 
     t = threading.Thread(
         target=_do_upload,
-        args=(task_id, saved_path, description, tags, account["cookies"]),
+        args=(task_id, saved_path, description, tags, int(account_id), account["cookies"]),
         daemon=True,
     )
     t.start()
@@ -471,11 +485,14 @@ class Clipboard(Resource):
             return {"error": "No text provided."}, 400
         try:
             uploader = get_uploader()
-            uploader.driver.execute_cdp_cmd("Browser.grantPermissions", {
+            driver = uploader.get_any_driver()
+            if not driver:
+                return {"error": "No active browser sessions."}, 503
+            driver.execute_cdp_cmd("Browser.grantPermissions", {
                 "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"],
-                "origin": uploader.driver.current_url
+                "origin": driver.current_url
             })
-            uploader.driver.execute_script("navigator.clipboard.writeText(arguments[0]);", text)
+            driver.execute_script("navigator.clipboard.writeText(arguments[0]);", text)
             return {"success": True, "message": f"Copied {len(text)} chars to clipboard."}
         except Exception as exc:
             import subprocess

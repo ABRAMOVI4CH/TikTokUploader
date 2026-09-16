@@ -41,7 +41,8 @@ def _api(method: str, path: str, **kwargs):
         headers = kwargs.pop("headers", {})
         if API_SECRET:
             headers["Authorization"] = f"Bearer {API_SECRET}"
-        resp = getattr(requests, method)(url, timeout=30, headers=headers, **kwargs)
+        timeout = kwargs.pop("timeout", 30)
+        resp = getattr(requests, method)(url, timeout=timeout, headers=headers, **kwargs)
         return resp.json(), resp.status_code
     except requests.exceptions.ConnectionError:
         return {"error": "API server is unreachable."}, 503
@@ -56,7 +57,8 @@ def _proxy(method, path, **kwargs):
         headers = kwargs.pop("headers", {})
         if API_SECRET:
             headers["Authorization"] = f"Bearer {API_SECRET}"
-        resp = getattr(requests, method)(url, timeout=30, headers=headers, **kwargs)
+        timeout = kwargs.pop("timeout", 30)
+        resp = getattr(requests, method)(url, timeout=timeout, headers=headers, **kwargs)
         return Response(resp.content, status=resp.status_code,
                         content_type=resp.headers.get("content-type"))
     except Exception as exc:
@@ -178,7 +180,7 @@ def proxy_list_accounts():
 
 @app.route("/api/accounts", methods=["POST"])
 def proxy_add_account():
-    return _proxy("post", "/api/accounts", json=request.get_json(force=True))
+    return _proxy("post", "/api/accounts", json=request.get_json(force=True), timeout=120)
 
 
 @app.route("/api/accounts/<int:account_id>", methods=["GET"])
@@ -188,7 +190,7 @@ def proxy_get_account(account_id):
 
 @app.route("/api/accounts/<int:account_id>", methods=["PUT"])
 def proxy_update_account(account_id):
-    return _proxy("put", f"/api/accounts/{account_id}", json=request.get_json(force=True))
+    return _proxy("put", f"/api/accounts/{account_id}", json=request.get_json(force=True), timeout=120)
 
 
 @app.route("/api/accounts/<int:account_id>", methods=["DELETE"])
