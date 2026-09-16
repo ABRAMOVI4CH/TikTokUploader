@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db import (
     init_db, add_account, get_account, list_accounts,
     update_account, delete_account, add_task, update_task,
-    get_task, list_tasks,
+    get_task, list_tasks, admin_exists, create_admin, verify_admin,
 )
 from uploader.tiktok_uploader import TikTokUploader
 
@@ -28,6 +28,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("api.server")
+
+API_SECRET = os.environ.get("API_SECRET", "")
 
 app = Flask(__name__)
 
@@ -46,6 +48,7 @@ ns_health = api.namespace("health", path="/api/health", description="Health chec
 ns_accounts = api.namespace("accounts", path="/api/accounts", description="TikTok account management")
 ns_jobs = api.namespace("jobs", path="/api/jobs", description="Upload jobs")
 ns_clipboard = api.namespace("clipboard", path="/api/clipboard", description="VNC clipboard")
+ns_auth = api.namespace("auth", path="/api/auth", description="Authentication")
 
 # ------------------------------------------------------------------
 # Paths
@@ -57,6 +60,22 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(AVATARS_DIR, exist_ok=True)
 
 init_db()
+
+# Paths that don't require Bearer token
+PUBLIC_PREFIXES = ("/api/auth", "/docs", "/swagger", "/swaggerui", "/static")
+
+@app.before_request
+def check_bearer_token():
+    if not API_SECRET:
+        return  # No secret configured — skip auth
+    from flask import request as req
+    path = req.path
+    if any(path.startswith(p) for p in PUBLIC_PREFIXES):
+        return
+    auth_header = req.headers.get("Authorization", "")
+    if auth_header == f"Bearer {API_SECRET}":
+        return
+    return {"error": "Unauthorized. Provide a valid Bearer token."}, 401
 
 # ------------------------------------------------------------------
 # Job statuses
@@ -468,6 +487,65 @@ class Clipboard(Resource):
             except Exception:
                 pass
             return {"error": str(exc)}, 500
+
+
+# ------------------------------------------------------------------
+# Auth
+# ------------------------------------------------------------------
+
+auth_setup_model = api.model("AuthSetup", {
+    "username": fields.String(required=True, description="Admin username"),
+    "password": fields.String(required=True, description="Admin password"),
+})
+
+auth_login_model = api.model("AuthLogin", {
+    "username": fields.String(required=True, description="Username"),
+    "password": fields.String(required=True, description="Password"),
+})
+
+
+@ns_auth.route("/setup")
+class AuthSetupResource(Resource):
+    @ns_auth.doc("auth_setup")
+    def get(self):
+        """Check if initial setup is needed"""
+        return {"setup_required": not admin_exists()}
+
+    @ns_auth.doc("auth_create_admin")
+    @ns_auth.expect(auth_setup_model)
+    @ns_auth.response(201, "Admin created")
+    @ns_auth.response(400, "Validation error", error_model)
+    @ns_auth.response(409, "Admin already exists", error_model)
+    def post(self):
+        """Create initial admin account (only works once)"""
+        if admin_exists():
+            return {"error": "Admin account already exists."}, 409
+        data = api.payload
+        username = (data.get("username") or "").strip()
+        password = data.get("password") or ""
+        if not username or not password:
+            return {"error": "Username and password are required."}, 400
+        if len(password) < 4:
+            return {"error": "Password must be at least 4 characters."}, 400
+        admin_id = create_admin(username, password)
+        return {"success": True, "admin_id": admin_id}, 201
+
+
+@ns_auth.route("/login")
+class AuthLoginResource(Resource):
+    @ns_auth.doc("auth_login")
+    @ns_auth.expect(auth_login_model)
+    @ns_auth.response(200, "Login successful")
+    @ns_auth.response(401, "Invalid credentials", error_model)
+    def post(self):
+        """Login with admin credentials"""
+        data = api.payload
+        username = (data.get("username") or "").strip()
+        password = data.get("password") or ""
+        admin = verify_admin(username, password)
+        if not admin:
+            return {"error": "Invalid username or password."}, 401
+        return {"success": True, "username": admin["username"]}
 
 
 if __name__ == "__main__":

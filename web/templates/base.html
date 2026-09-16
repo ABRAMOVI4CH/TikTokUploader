@@ -287,6 +287,12 @@
       <li><a href="{{ url_for('vnc') }}" {% if request.endpoint == 'vnc' %}class="active"{% endif %}>VNC</a></li>
       {% endif %}
     </ul>
+    {% if admin_user %}
+    <div style="margin-left:auto; display:flex; align-items:center; gap:12px;">
+      <span style="font-size:13px; color:var(--text-muted);">{{ admin_user }}</span>
+      <a href="{{ url_for('logout') }}" style="font-size:13px; color:var(--text-muted);">Выйти</a>
+    </div>
+    {% endif %}
   </nav>
 
   <main>

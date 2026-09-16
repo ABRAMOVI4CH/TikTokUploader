@@ -17,3 +17,4 @@ services:
       - DEBUG=true
       - DASHBOARD=true
       - SWAGGER=true
+      - API_SECRET=

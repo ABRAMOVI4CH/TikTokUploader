@@ -5,6 +5,8 @@ import os
 import sqlite3
 from datetime import datetime
 
+from werkzeug.security import generate_password_hash, check_password_hash
+
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
 
 
@@ -27,6 +29,13 @@ def init_db():
             avatar_path TEXT    DEFAULT '',
             cookies     TEXT    NOT NULL,
             created_at  TEXT    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS admin_users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT    NOT NULL UNIQUE,
+            password_hash TEXT    NOT NULL,
+            created_at    TEXT    NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS tasks (
@@ -103,6 +112,36 @@ def delete_account(account_id: int):
     conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
     conn.commit()
     conn.close()
+
+
+# ------------------------------------------------------------------
+# Admin helpers
+# ------------------------------------------------------------------
+
+def admin_exists() -> bool:
+    conn = get_db()
+    row = conn.execute("SELECT COUNT(*) as cnt FROM admin_users").fetchone()
+    conn.close()
+    return row["cnt"] > 0
+
+def create_admin(username: str, password: str) -> int:
+    conn = get_db()
+    cur = conn.execute(
+        "INSERT INTO admin_users (username, password_hash, created_at) VALUES (?, ?, ?)",
+        (username, generate_password_hash(password), datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    admin_id = cur.lastrowid
+    conn.close()
+    return admin_id
+
+def verify_admin(username: str, password: str) -> dict | None:
+    conn = get_db()
+    row = conn.execute("SELECT * FROM admin_users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    if row and check_password_hash(row["password_hash"], password):
+        return {"id": row["id"], "username": row["username"]}
+    return None
 
 
 # ------------------------------------------------------------------

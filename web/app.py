@@ -12,7 +12,7 @@ import os
 import sys
 
 import requests
-from flask import Flask, Response, redirect, render_template, request, url_for
+from flask import Flask, Response, redirect, render_template, request, session, url_for
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -23,20 +23,25 @@ logging.basicConfig(
 logger = logging.getLogger("web.app")
 
 app = Flask(__name__, template_folder="templates")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
 
 API_BASE = os.environ.get("API_BASE_URL", "http://127.0.0.1:5000")
 DEBUG_MODE = os.environ.get("DEBUG", "false").lower() == "true"
+API_SECRET = os.environ.get("API_SECRET", "")
 
 
 @app.context_processor
 def inject_globals():
-    return {"debug_mode": DEBUG_MODE}
+    return {"debug_mode": DEBUG_MODE, "admin_user": session.get("admin_user")}
 
 
 def _api(method: str, path: str, **kwargs):
     url = f"{API_BASE}{path}"
     try:
-        resp = getattr(requests, method)(url, timeout=30, **kwargs)
+        headers = kwargs.pop("headers", {})
+        if API_SECRET:
+            headers["Authorization"] = f"Bearer {API_SECRET}"
+        resp = getattr(requests, method)(url, timeout=30, headers=headers, **kwargs)
         return resp.json(), resp.status_code
     except requests.exceptions.ConnectionError:
         return {"error": "API server is unreachable."}, 503
@@ -48,7 +53,10 @@ def _api(method: str, path: str, **kwargs):
 def _proxy(method, path, **kwargs):
     url = f"{API_BASE}{path}"
     try:
-        resp = getattr(requests, method)(url, timeout=30, **kwargs)
+        headers = kwargs.pop("headers", {})
+        if API_SECRET:
+            headers["Authorization"] = f"Bearer {API_SECRET}"
+        resp = getattr(requests, method)(url, timeout=30, headers=headers, **kwargs)
         return Response(resp.content, status=resp.status_code,
                         content_type=resp.headers.get("content-type"))
     except Exception as exc:
@@ -56,10 +64,69 @@ def _proxy(method, path, **kwargs):
 
 
 # ------------------------------------------------------------------
+# Auth
+# ------------------------------------------------------------------
+
+def login_required(f):
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("admin_user"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    check, _ = _api("get", "/api/auth/setup")
+    if not check.get("setup_required"):
+        return redirect(url_for("login"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        if not username or not password:
+            return render_template("setup.html", error="Заполните все поля.")
+        if len(password) < 4:
+            return render_template("setup.html", error="Пароль минимум 4 символа.")
+        result, status = _api("post", "/api/auth/setup", json={"username": username, "password": password})
+        if status == 201:
+            session["admin_user"] = username
+            return redirect(url_for("dashboard"))
+        return render_template("setup.html", error=result.get("error", "Ошибка."))
+    return render_template("setup.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    check, _ = _api("get", "/api/auth/setup")
+    if check.get("setup_required"):
+        return redirect(url_for("setup"))
+    if session.get("admin_user"):
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        result, status = _api("post", "/api/auth/login", json={"username": username, "password": password})
+        if status == 200:
+            session["admin_user"] = username
+            return redirect(url_for("dashboard"))
+        return render_template("login.html", error="Неверный логин или пароль.")
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+# ------------------------------------------------------------------
 # Pages
 # ------------------------------------------------------------------
 
 @app.route("/")
+@login_required
 def dashboard():
     health_data, _ = _api("get", "/api/health")
     tasks_data, _ = _api("get", "/api/tasks")
@@ -68,6 +135,7 @@ def dashboard():
 
 
 @app.route("/upload")
+@login_required
 def upload():
     accounts_data, _ = _api("get", "/api/accounts")
     accounts = accounts_data if isinstance(accounts_data, list) else []
@@ -75,6 +143,7 @@ def upload():
 
 
 @app.route("/vnc")
+@login_required
 def vnc():
     if not DEBUG_MODE:
         return redirect(url_for("dashboard"))
@@ -82,6 +151,7 @@ def vnc():
 
 
 @app.route("/accounts")
+@login_required
 def accounts():
     accounts_data, _ = _api("get", "/api/accounts")
     accounts_list = accounts_data if isinstance(accounts_data, list) else []

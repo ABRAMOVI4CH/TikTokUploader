@@ -26,6 +26,7 @@ services:
       - DEBUG=true
       - DASHBOARD=true
       - SWAGGER=true
+      - API_SECRET=          # openssl rand -hex 16
 ```
 
 ```bash
@@ -57,8 +58,26 @@ docker compose up --build -d
 | `DASHBOARD` | `true` | Enable web dashboard on port 5001 |
 | `SWAGGER` | `false` | Enable Swagger UI at `/docs` on API port |
 | `VNC_PASSWORD` | — | VNC connection password |
+| `API_SECRET` | — | Bearer token for API authentication (generate: `openssl rand -hex 16`) |
 | `CHROME_BINARY` | `/usr/bin/chromium` | Path to Chrome/Chromium binary |
 | `CHROMEDRIVER_PATH` | `/usr/bin/chromedriver` | Path to chromedriver binary |
+
+## Authentication
+
+### API Bearer Token
+
+Set `API_SECRET` env to protect API endpoints:
+
+```bash
+# Generate a secret
+openssl rand -hex 16
+```
+
+All API requests must include `Authorization: Bearer <your-secret>`. Auth endpoints (`/api/auth/*`) and Swagger UI are accessible without a token.
+
+### Dashboard Admin
+
+On first visit to the Web UI, you'll be prompted to create an admin account (username + password). After that, login is required to access the dashboard.
 
 ## Setup
 
@@ -90,6 +109,14 @@ Job statuses: `IN_QUEUE` → `IN_PROGRESS` → `SUCCESS` / `FAIL`
 | `GET` | `/api/accounts/<id>` | Get account with cookies |
 | `PUT` | `/api/accounts/<id>` | Update account |
 | `DELETE` | `/api/accounts/<id>` | Delete account |
+
+### Auth (no Bearer token required)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/auth/setup` | Check if initial setup is needed |
+| `POST` | `/api/auth/setup` | Create admin account (first time only) |
+| `POST` | `/api/auth/login` | Login with admin credentials |
 
 ### Other
 
