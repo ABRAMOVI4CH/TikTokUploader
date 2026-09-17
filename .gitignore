@@ -12,3 +12,4 @@ data.db-shm
 static/avatars/*
 !static/avatars/.gitkeep
 docs/
+state/

@@ -4,43 +4,46 @@ Automated TikTok video uploader via Selenium with multi-account support, web das
 
 ## Quick start
 
-### Docker Compose (from GHCR)
+### Local Docker — headless Chromium
 
-```yaml
-# docker-compose.yml
-services:
-  tiktok-uploader:
-    image: ghcr.io/abramovi4ch/tiktokuploader:latest
-    container_name: tiktok-uploader
-    ports:
-      - "5050:5000"  # API + Swagger
-      - "5051:5001"  # Web UI
-      - "5901:5900"  # VNC
-    volumes:
-      - ./uploads:/app/uploads
-    restart: unless-stopped
-    shm_size: "512m"
-    environment:
-      - PYTHONUNBUFFERED=1
-      - VNC_PASSWORD=1111
-      - DEBUG=true
-      - DASHBOARD=true
-      - SWAGGER=true
-      - API_SECRET=          # openssl rand -hex 16
-```
+The configured macOS deployment uses Colima, Docker and `docker-compose`.
+API and dashboard run in separate containers; there is no VNC or X server.
 
 ```bash
-docker pull ghcr.io/abramovi4ch/tiktokuploader:latest
-docker compose up -d
+colima start
+cd ~/tools/TikTokUploader
+docker-compose up -d --build
+# Stop:
+docker-compose down
 ```
 
-### Build from source
+Panel: http://127.0.0.1:5051; API: http://127.0.0.1:5050;
+Swagger: http://127.0.0.1:5050/docs. Ports bind only to loopback.
 
+Persistent data:
+- `state/data.db`: migrated administrator, TikTok accounts/cookies and jobs.
+- `uploads/` and `static/avatars/`: bind-mounted files.
+- `~/.config/tiktok-uploader/docker.env`: private API and Flask session secrets,
+  preserved from `~/.config/tiktok-uploader/local.json`.
+- Root `data.db`: retained pre-migration database, not used by Docker.
+
+Do not run the former `local.py` services alongside Docker. They use the old
+database and the same host ports. Native services were stopped at cutover.
+The secret files and state directory are not included in the image or Git.
+`restart: unless-stopped` restarts containers when the Docker engine starts;
+after restarting macOS, start Colima if it is not running.
+
+Checks without publication:
 ```bash
-git clone https://github.com/ABRAMOVI4CH/TikTokUploader.git
-cd TikTokUploader
-docker compose up --build -d
+.venv/bin/python check_local.py
+docker-compose exec -T api python check_recovery.py
 ```
+
+The recovery check closes and recreates a separate headless browser with a
+temporary database. Production browser operations share one lock; a dead
+session is recreated before the next operation, never by replaying an upload.
+Actual publication is not verified by these checks. Upstream success
+detection remains heuristic: do not automatically retry uncertain uploads.
 
 ## Ports
 
@@ -48,19 +51,20 @@ docker compose up --build -d
 |-------------|------------------|-------------|
 | 5050 | 5000 | REST API + Swagger (`/docs`) |
 | 5051 | 5001 | Web Dashboard |
-| 5901 | 5900 | VNC (browser view) |
 
 ## Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEBUG` | `false` | Enable VNC server for browser debugging |
-| `DASHBOARD` | `true` | Enable web dashboard on port 5001 |
+| `HEADLESS` | `true` in Docker | Start Chromium without a visible window |
+| `DEBUG` | `false` | Disable the dashboard's VNC view |
 | `SWAGGER` | `false` | Enable Swagger UI at `/docs` on API port |
-| `VNC_PASSWORD` | — | VNC connection password |
 | `API_SECRET` | — | Bearer token for API authentication (generate: `openssl rand -hex 16`) |
 | `CHROME_BINARY` | `/usr/bin/chromium` | Path to Chrome/Chromium binary |
 | `CHROMEDRIVER_PATH` | `/usr/bin/chromedriver` | Path to chromedriver binary |
+| `DB_PATH` | `/app/state/data.db` in Compose | Persistent SQLite database |
+| `API_BASE_URL` | `http://api:5000` in Compose | Dashboard's internal API address |
+| `FLASK_SECRET_KEY` | Private persisted value | Preserve dashboard login sessions |
 
 ## Authentication
 
@@ -73,7 +77,9 @@ Set `API_SECRET` env to protect API endpoints:
 openssl rand -hex 16
 ```
 
-All API requests must include `Authorization: Bearer <your-secret>`. Auth endpoints (`/api/auth/*`) and Swagger UI are accessible without a token.
+All API requests, including `/api/auth/*`, require `Authorization: Bearer <your-secret>`.
+Swagger UI is accessible without a token. Dashboard API proxies require a
+logged-in administrator; dashboard mutations require a same-origin request.
 
 ### Dashboard Admin
 
