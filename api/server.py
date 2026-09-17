@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import uuid
+from contextlib import contextmanager
 
 from flask import Flask, send_from_directory
 from flask_restx import Api, Resource, fields, reqparse
@@ -63,7 +64,7 @@ os.makedirs(AVATARS_DIR, exist_ok=True)
 init_db()
 
 # Paths that don't require Bearer token
-PUBLIC_PREFIXES = ("/api/auth", "/docs", "/swagger", "/swaggerui", "/static")
+PUBLIC_PREFIXES = ("/docs", "/swagger", "/swaggerui", "/static")
 
 @app.before_request
 def check_bearer_token():
@@ -94,13 +95,18 @@ _uploader: TikTokUploader | None = None
 _uploader_lock = threading.Lock()
 
 
-def get_uploader() -> TikTokUploader:
+@contextmanager
+def get_uploader():
+    """Lease a live browser exclusively; never replay an interrupted operation."""
     global _uploader
     with _uploader_lock:
+        if _uploader is not None and not _uploader.check_status()["alive"]:
+            _uploader.quit()
+            _uploader = None
         if _uploader is None:
             logger.info("Creating TikTokUploader instance…")
             _uploader = TikTokUploader()
-        return _uploader
+        yield _uploader
 
 
 # ------------------------------------------------------------------
@@ -157,8 +163,8 @@ class HealthCheck(Resource):
     def get(self):
         """Check browser health status"""
         try:
-            uploader = get_uploader()
-            return uploader.check_status()
+            with get_uploader() as uploader:
+                return uploader.check_status()
         except Exception as exc:
             return {"alive": False, "error": str(exc)}
 
@@ -194,8 +200,8 @@ class AccountList(Resource):
             return {"error": "Cookies must be a JSON array."}, 400
 
         try:
-            uploader = get_uploader()
-            result = uploader.verify_account(cookies)
+            with get_uploader() as uploader:
+                result = uploader.verify_account(cookies)
         except Exception as exc:
             logger.exception("Account verification error: %s", exc)
             return {"error": f"Verification failed: {exc}"}, 500
@@ -261,8 +267,8 @@ class AccountDetail(Resource):
 
         if cookies and isinstance(cookies, list):
             try:
-                uploader = get_uploader()
-                result = uploader.verify_account(cookies)
+                with get_uploader() as uploader:
+                    result = uploader.verify_account(cookies)
             except Exception as exc:
                 return {"error": f"Verification failed: {exc}"}, 500
 
@@ -337,8 +343,8 @@ def _do_upload(task_id: str, video_path: str, description: str,
                tags: list[str], account_id: int, cookies: list):
     update_task(task_id, status=Status.IN_PROGRESS, message="Upload in progress…")
     try:
-        uploader = get_uploader()
-        result = uploader.upload_video(video_path, description, account_id, cookies, tags)
+        with get_uploader() as uploader:
+            result = uploader.upload_video(video_path, description, account_id, cookies, tags)
         final_status = Status.SUCCESS if result["status"] == "success" else Status.FAIL
         update_task(task_id, status=final_status, message=result["message"])
     except Exception as exc:
@@ -484,15 +490,15 @@ class Clipboard(Resource):
         if not text:
             return {"error": "No text provided."}, 400
         try:
-            uploader = get_uploader()
-            driver = uploader.get_any_driver()
-            if not driver:
-                return {"error": "No active browser sessions."}, 503
-            driver.execute_cdp_cmd("Browser.grantPermissions", {
-                "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"],
-                "origin": driver.current_url
-            })
-            driver.execute_script("navigator.clipboard.writeText(arguments[0]);", text)
+            with get_uploader() as uploader:
+                driver = uploader.get_any_driver()
+                if not driver:
+                    return {"error": "No active browser sessions."}, 503
+                driver.execute_cdp_cmd("Browser.grantPermissions", {
+                    "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"],
+                    "origin": driver.current_url
+                })
+                driver.execute_script("navigator.clipboard.writeText(arguments[0]);", text)
             return {"success": True, "message": f"Copied {len(text)} chars to clipboard."}
         except Exception as exc:
             import subprocess

@@ -1,24 +1,39 @@
+name: tiktok-uploader
+
 services:
-  tiktok-uploader:
+  api:
     build: .
-    container_name: tiktok-uploader
+    image: tiktok-uploader-local:headless
+    init: true
     ports:
-      - "5050:5000"  # API
-      - "5051:5001"  # Web UI
-      - "5901:5900"  # VNC
+      - "127.0.0.1:5050:5000"
+    env_file:
+      - ${HOME}/.config/tiktok-uploader/docker.env
+    environment:
+      HEADLESS: "true"
+      DEBUG: "false"
+      SWAGGER: "true"
+      DB_DIR: /app/state
+      CHROME_PROFILES_DIR: /app/profiles
     volumes:
-      - ./data:/app/data
+      - ./state:/app/state
       - ./uploads:/app/uploads
       - ./profiles:/app/profiles
+      - ./static/avatars:/app/state/avatars
+    shm_size: "2gb"
     restart: unless-stopped
-    shm_size: "2g"
+
+  web:
+    image: tiktok-uploader-local:headless
+    command: ["python", "-m", "flask", "--app", "web.app", "run", "--host=0.0.0.0", "--port=5001"]
+    init: true
+    ports:
+      - "127.0.0.1:5051:5001"
+    env_file:
+      - ${HOME}/.config/tiktok-uploader/docker.env
     environment:
-      - PYTHONUNBUFFERED=1
-      - VNC_PASSWORD=1111
-      - DISPLAY=:99
-      - DEBUG=true
-      - DASHBOARD=true
-      - SWAGGER=true
-      - DB_DIR=/app/data
-      - CHROME_PROFILES_DIR=/app/profiles
-      - API_SECRET=
+      API_BASE_URL: http://api:5000
+      DEBUG: "false"
+    depends_on:
+      - api
+    restart: unless-stopped

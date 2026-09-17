@@ -10,3 +10,6 @@ data.db-shm
 static/avatars/*
 !static/avatars/.gitkeep
 cookies.json
+.env
+.env.*
+state/

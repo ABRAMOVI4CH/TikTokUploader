@@ -30,6 +30,15 @@ DEBUG_MODE = os.environ.get("DEBUG", "false").lower() == "true"
 API_SECRET = os.environ.get("API_SECRET", "")
 
 
+@app.before_request
+def protect_local_dashboard():
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        if request.headers.get("Origin") != request.host_url.rstrip("/"):
+            return {"error": "Same-origin request required."}, 403
+    if request.path.startswith("/api/") and not session.get("admin_user"):
+        return {"error": "Login required."}, 401
+
+
 @app.context_processor
 def inject_globals():
     return {"debug_mode": DEBUG_MODE, "admin_user": session.get("admin_user")}

@@ -68,7 +68,7 @@ class TikTokUploader:
 
     def _build_options(self, profile_dir: str | None = None) -> ChromeOptions:
         options = ChromeOptions()
-        if not os.environ.get("DISPLAY"):
+        if os.environ.get("HEADLESS", "false").lower() == "true":
             options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -107,8 +107,8 @@ class TikTokUploader:
     def _create_driver(self, profile_dir: str | None = None) -> webdriver.Chrome:
         logger.info("Creating Chrome driver (profile=%s)…", profile_dir)
         options = self._build_options(profile_dir)
-        driver_path = os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver")
-        service = Service(executable_path=driver_path)
+        driver_path = os.environ.get("CHROMEDRIVER_PATH")
+        service = Service(executable_path=driver_path) if driver_path else Service()
 
         driver = webdriver.Chrome(service=service, options=options)
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
