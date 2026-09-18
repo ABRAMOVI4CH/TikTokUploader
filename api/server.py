@@ -22,6 +22,7 @@ from db import (
     get_task, list_tasks, admin_exists, create_admin, verify_admin,
 )
 from uploader.tiktok_uploader import TikTokUploader
+from uploader.tiktok_api import TikTokAPI
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +50,7 @@ ns_accounts = api.namespace("accounts", path="/api/accounts", description="TikTo
 ns_jobs = api.namespace("jobs", path="/api/jobs", description="Upload jobs")
 ns_clipboard = api.namespace("clipboard", path="/api/clipboard", description="VNC clipboard")
 ns_auth = api.namespace("auth", path="/api/auth", description="Authentication")
+ns_tiktok = api.namespace("tiktok", path="/api/accounts", description="TikTok live data")
 
 # ------------------------------------------------------------------
 # Paths
@@ -311,6 +313,109 @@ class AccountDetail(Resource):
             pass
         delete_account(account_id)
         return {"success": True}
+
+
+@ns_tiktok.route("/<int:account_id>/videos")
+@ns_tiktok.param("account_id", "Account ID")
+class AccountVideos(Resource):
+    @ns_tiktok.doc("get_video_list")
+    @ns_tiktok.response(404, "Not found", error_model)
+    def get(self, account_id):
+        """Fetch video list from TikTok Studio (uses Selenium, may take ~30s)"""
+        account = get_account(account_id)
+        if not account:
+            return {"error": "Account not found."}, 404
+        cookies = account.get("cookies") or []
+        if not cookies:
+            return {"error": "No cookies for this account."}, 400
+        try:
+            uploader = TikTokUploader()
+            videos = uploader.get_video_list(account_id, cookies)
+            return {"videos": videos, "count": len(videos)}
+        except Exception as exc:
+            logger.exception("Video list fetch error: %s", exc)
+            return {"error": str(exc)}, 500
+
+
+@ns_tiktok.route("/<int:account_id>/videos/<string:video_id>/analytics")
+@ns_tiktok.param("account_id", "Account ID")
+@ns_tiktok.param("video_id", "TikTok Video ID")
+class AccountVideoAnalytics(Resource):
+    @ns_tiktok.doc("get_video_analytics")
+    @ns_tiktok.response(404, "Not found", error_model)
+    def get(self, account_id, video_id):
+        """Fetch per-video deep analytics from TikTok Studio analytics page (Selenium, ~15s)"""
+        account = get_account(account_id)
+        if not account:
+            return {"error": "Account not found."}, 404
+        cookies = account.get("cookies") or []
+        if not cookies:
+            return {"error": "No cookies for this account."}, 400
+        try:
+            uploader = TikTokUploader()
+            data = uploader.get_video_deep_analytics(account_id, video_id, cookies)
+            return data
+        except Exception as exc:
+            logger.exception("Video analytics fetch error: %s", exc)
+            return {"error": str(exc)}, 500
+
+
+@ns_tiktok.route("/<int:account_id>/analytics")
+@ns_tiktok.param("account_id", "Account ID")
+class AccountAnalytics(Resource):
+    @ns_tiktok.doc("get_analytics")
+    @ns_tiktok.response(404, "Not found", error_model)
+    def get(self, account_id):
+        """Fetch deep analytics from TikTok Studio analytics API"""
+        from flask import request as req
+        days = int(req.args.get("days", 28))
+        account = get_account(account_id)
+        if not account:
+            return {"error": "Account not found."}, 404
+        cookies = account.get("cookies") or []
+        if not cookies:
+            return {"error": "No cookies for this account."}, 400
+        try:
+            api_client = TikTokAPI(cookies)
+            return api_client.get_deep_analytics(days)
+        except Exception as exc:
+            logger.exception("Analytics fetch error: %s", exc)
+            return {"error": str(exc)}, 500
+
+
+@ns_tiktok.route("/<int:account_id>/tiktok")
+@ns_tiktok.param("account_id", "Account ID")
+class AccountTikTokData(Resource):
+    @ns_tiktok.doc("get_tiktok_data")
+    @ns_tiktok.response(404, "Not found", error_model)
+    def get(self, account_id):
+        """Fetch live TikTok data for an account (profile, settings, analytics)"""
+        account = get_account(account_id)
+        if not account:
+            return {"error": "Account not found."}, 404
+
+        cookies = account.get("cookies") or []
+        if not cookies:
+            return {"error": "No cookies for this account."}, 400
+
+        try:
+            api_client = TikTokAPI(cookies)
+            data = api_client.get_all()
+            # Attach DB upload stats
+            tasks = list_tasks()
+            acc_tasks = [t for t in tasks if t.get("account_id") == account_id]
+            data["upload_stats"] = {
+                "total": len(acc_tasks),
+                "success": sum(1 for t in acc_tasks if t["status"] == "SUCCESS"),
+                "failed": sum(1 for t in acc_tasks if t["status"] == "FAIL"),
+                "in_queue": sum(1 for t in acc_tasks if t["status"] == "IN_QUEUE"),
+                "in_progress": sum(1 for t in acc_tasks if t["status"] == "IN_PROGRESS"),
+                "recent": acc_tasks[:10],
+            }
+            return data
+        except Exception as exc:
+            logger.exception("TikTok data fetch error: %s", exc)
+            return {"error": str(exc)}, 500
 
 
 # ------------------------------------------------------------------

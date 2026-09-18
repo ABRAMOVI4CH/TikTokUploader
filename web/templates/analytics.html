@@ -1,0 +1,1042 @@
+{% extends "base.html" %}
+{% block title %}Аналитика — TikTok Uploader{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  .analytics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .analytics-grid .card-full { grid-column: 1 / -1; }
+
+  .profile-header {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+  .profile-avatar {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--surface2);
+    flex-shrink: 0;
+    border: 2px solid var(--border);
+  }
+  .profile-avatar-placeholder {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    background: var(--surface2);
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+    flex-shrink: 0;
+  }
+  .profile-name { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+  .profile-uid { font-size: 12px; color: var(--text-muted); font-family: monospace; }
+
+  .kv-list { display: flex; flex-direction: column; gap: 10px; }
+  .kv-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .kv-row:last-child { border-bottom: none; }
+  .kv-key { color: var(--text-muted); font-size: 13px; }
+  .kv-val { font-weight: 500; text-align: right; max-width: 60%; }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .stat-box {
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 16px 12px;
+    text-align: center;
+  }
+  .stat-num { font-size: 28px; font-weight: 700; color: var(--accent); line-height: 1; }
+  .stat-label { font-size: 12px; color: var(--text-muted); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--surface2);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+  .tag-green { background: rgba(76,175,80,0.15); color: #81c784; border-color: rgba(76,175,80,0.3); }
+  .tag-red   { background: rgba(244,67,54,0.15); color: #e57373; border-color: rgba(244,67,54,0.3); }
+  .tag-blue  { background: rgba(33,150,243,0.15); color: #64b5f6; border-color: rgba(33,150,243,0.3); }
+  .tag-yellow{ background: rgba(255,193,7,0.15); color: #ffd54f; border-color: rgba(255,193,7,0.3); }
+
+  #loading-state { text-align: center; padding: 60px; color: var(--text-muted); }
+  .spinner {
+    display: inline-block;
+    width: 36px; height: 36px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #error-state { display: none; }
+  #data-state  { display: none; }
+
+  .section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+    font-weight: 600;
+  }
+
+  .upload-row td { font-size: 13px; }
+  .text-muted { color: var(--text-muted); }
+  .text-mono { font-family: monospace; font-size: 12px; }
+
+  .refresh-info { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+  main { max-width: 1200px; }
+
+  /* ---- Video grid ---- */
+  .video-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 16px;
+    margin-top: 8px;
+  }
+  .video-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.1s;
+  }
+  .video-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .video-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(254,44,85,0.3); }
+  .video-thumb-wrap {
+    position: relative;
+    aspect-ratio: 9/16;
+    background: #000;
+    overflow: hidden;
+  }
+  .video-thumb-wrap img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .video-duration {
+    position: absolute;
+    bottom: 6px; right: 6px;
+    background: rgba(0,0,0,0.7);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+  .video-privacy-badge {
+    position: absolute;
+    top: 6px; left: 6px;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    font-size: 10px;
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+  .video-card-body { padding: 10px; }
+  .video-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    margin-bottom: 8px;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .video-stats {
+    display: flex;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .video-stat-item { display: flex; align-items: center; gap: 3px; }
+
+  /* ---- Video detail panel ---- */
+  .video-detail-panel {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 24px;
+    position: relative;
+  }
+  .video-detail-panel.open { display: flex; gap: 24px; }
+  .video-detail-preview {
+    flex-shrink: 0;
+    width: 220px;
+  }
+  .video-detail-preview img {
+    width: 100%;
+    border-radius: 8px;
+    display: block;
+  }
+  .video-detail-info { flex: 1; min-width: 0; }
+  .video-detail-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    word-break: break-word;
+  }
+  .video-detail-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .detail-stat-box {
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 10px;
+    text-align: center;
+  }
+  .detail-stat-num { font-size: 20px; font-weight: 700; color: var(--accent); }
+  .detail-stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
+  .close-panel {
+    position: absolute;
+    top: 12px; right: 14px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 20px;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .close-panel:hover { color: var(--text); }
+
+  .hashtag { color: var(--accent); font-size: 12px; }
+  .video-date { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+  .video-loading {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+
+  /* ---- Deep analytics ---- */
+  .analytics-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .am-box {
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 14px 12px;
+    text-align: center;
+  }
+  .am-total { font-size: 24px; font-weight: 700; color: var(--accent); line-height: 1; }
+  .am-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 5px; }
+  .am-delta { font-size: 12px; margin-top: 4px; }
+  .am-delta.pos { color: #81c784; }
+  .am-delta.neg { color: #e57373; }
+
+  .charts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-top: 16px;
+  }
+  .charts-grid .chart-full { grid-column: 1 / -1; }
+  .chart-box {
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .chart-box-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .chart-canvas-wrap {
+    position: relative;
+    height: 180px;
+    overflow: hidden;
+  }
+  .chart-box canvas { display: block; }
+  #analytics-loading { text-align:center; padding:30px; color:var(--text-muted); }
+  #analytics-error { display:none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;">
+  <h1 style="font-size:22px; font-weight:700;">Аналитика аккаунта</h1>
+  <div style="display:flex; gap:12px; align-items:center;">
+    <select id="account-select" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:6px;font-size:14px;cursor:pointer;outline:none;">
+      <option value="">— Выберите аккаунт —</option>
+      {% for acc in accounts %}
+      <option value="{{ acc.id }}">{{ acc.name }}{% if acc.tiktok_username %} (@{{ acc.tiktok_username }}){% endif %}</option>
+      {% endfor %}
+    </select>
+    <button id="refresh-btn" class="btn btn-secondary" disabled onclick="loadData()">Обновить</button>
+  </div>
+</div>
+
+{% if not accounts %}
+<div class="card" style="text-align:center; padding:48px; color:var(--text-muted);">
+  <div style="font-size:32px; margin-bottom:12px;">📭</div>
+  <div style="font-size:16px; font-weight:600; margin-bottom:8px;">Нет аккаунтов</div>
+  <div style="font-size:14px;">Сначала добавьте аккаунт в разделе <a href="{{ url_for('accounts') }}">Аккаунты</a></div>
+</div>
+{% else %}
+
+<div id="idle-state" style="text-align:center;padding:60px;color:var(--text-muted);">
+  <div style="font-size:40px;margin-bottom:12px;">📊</div>
+  <div style="font-size:15px;">Выберите аккаунт для просмотра данных</div>
+</div>
+
+<div id="loading-state" style="display:none; text-align:center; padding:60px; color:var(--text-muted);">
+  <div class="spinner"></div>
+  <div style="font-size:15px;">Загружаем данные из TikTok...</div>
+</div>
+
+<div id="error-state" class="alert alert-error" style="display:none;"></div>
+
+<div id="data-state" style="display:none;">
+
+  <!-- Profile -->
+  <div class="card">
+    <div class="profile-header">
+      <div id="avatar-wrap">
+        <div class="profile-avatar-placeholder">👤</div>
+      </div>
+      <div>
+        <div class="profile-name" id="p-nickname">—</div>
+        <div style="color:var(--text-muted);font-size:13px;margin-bottom:4px;">@<span id="p-unique-id">—</span></div>
+        <div id="p-badges" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;"></div>
+      </div>
+      <div style="margin-left:auto; text-align:right;">
+        <div class="refresh-info" id="fetched-at"></div>
+        <a id="p-tiktok-link" href="#" target="_blank" rel="noopener" style="font-size:13px; margin-top:6px; display:inline-block;">Открыть в TikTok ↗</a>
+      </div>
+    </div>
+
+    <div class="section-title">Статистика аккаунта</div>
+    <div class="stat-grid" style="margin-bottom:20px; grid-template-columns: 1fr;">
+      <div class="stat-box">
+        <div class="stat-num" id="s-followers">—</div>
+        <div class="stat-label">Подписчики</div>
+      </div>
+    </div>
+
+    <div class="section-title">Профиль</div>
+    <div class="kv-list">
+      <div class="kv-row"><span class="kv-key">User ID</span><span class="kv-val text-mono" id="p-user-id">—</span></div>
+      <div class="kv-row"><span class="kv-key">Регион</span><span class="kv-val" id="p-region">—</span></div>
+      <div class="kv-row"><span class="kv-key">Язык</span><span class="kv-val" id="p-language">—</span></div>
+      <div class="kv-row"><span class="kv-key">Дата регистрации</span><span class="kv-val" id="p-created">—</span></div>
+      <div class="kv-row"><span class="kv-key">Биография</span><span class="kv-val" id="p-bio" style="font-style:italic;">—</span></div>
+    </div>
+  </div>
+
+  <!-- Upload stats from our DB -->
+  <div class="analytics-grid">
+    <div class="card">
+      <div class="card-title">Загрузки через систему</div>
+      <div class="stat-grid" id="upload-stat-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 20px;">
+        <div class="stat-box">
+          <div class="stat-num" id="us-total">—</div>
+          <div class="stat-label">Всего</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num" id="us-success" style="color:var(--green);">—</div>
+          <div class="stat-label">Успешно</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num" id="us-failed" style="color:var(--red);">—</div>
+          <div class="stat-label">Ошибки</div>
+        </div>
+      </div>
+      <div class="section-title">Последние загрузки</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Файл</th><th>Статус</th><th>Дата</th></tr>
+          </thead>
+          <tbody id="recent-uploads-body">
+            <tr><td colspan="3" class="text-muted" style="text-align:center;padding:16px;">Нет загрузок</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Creator settings -->
+    <div class="card">
+      <div class="card-title">Настройки аккаунта</div>
+      <div class="kv-list" id="settings-list">
+      </div>
+    </div>
+  </div>
+
+  <!-- Deep analytics section -->
+  <div class="card" id="analytics-section" style="display:none;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+      <div class="card-title" style="margin-bottom:0;">Аналитика TikTok</div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <select id="days-select" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;">
+          <option value="7">7 дней</option>
+          <option value="28" selected>28 дней</option>
+          <option value="60">60 дней</option>
+        </select>
+        <button class="btn btn-secondary" id="load-analytics-btn" onclick="loadAnalytics()">Загрузить аналитику</button>
+      </div>
+    </div>
+    <div id="analytics-loading" style="display:none;"><div class="spinner" style="display:inline-block;margin-right:8px;"></div>Загружаем аналитику...</div>
+    <div id="analytics-error" class="alert alert-error" style="display:none;"></div>
+    <div id="analytics-data" style="display:none;">
+      <div class="analytics-metric-grid" id="analytics-metrics"></div>
+      <div class="charts-grid">
+        <div class="chart-box">
+          <div class="chart-box-title">Просмотры</div>
+          <div class="chart-canvas-wrap" data-chart="chart-views"><canvas id="chart-views"></canvas></div>
+        </div>
+        <div class="chart-box">
+          <div class="chart-box-title">Подписчики</div>
+          <div class="chart-canvas-wrap" data-chart="chart-followers"><canvas id="chart-followers"></canvas></div>
+        </div>
+        <div class="chart-box">
+          <div class="chart-box-title">Лайки и репосты</div>
+          <div class="chart-canvas-wrap" data-chart="chart-likes"><canvas id="chart-likes"></canvas></div>
+        </div>
+        <div class="chart-box">
+          <div class="chart-box-title">Активность по часам</div>
+          <div class="chart-canvas-wrap" data-chart="chart-hours"><canvas id="chart-hours"></canvas></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Video list section -->
+  <div class="card" id="videos-section" style="display:none;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+      <div class="card-title" style="margin-bottom:0;">Видео аккаунта</div>
+      <button class="btn btn-secondary" id="load-videos-btn" onclick="loadVideos()">Загрузить видео</button>
+    </div>
+
+    <!-- Video detail panel -->
+    <div class="video-detail-panel" id="video-detail-panel">
+      <button class="close-panel" onclick="closeDetail()">✕</button>
+      <div class="video-detail-preview">
+        <img id="vd-thumb" src="" alt="preview" />
+        <div style="margin-top:10px; text-align:center;">
+          <a id="vd-link" href="#" target="_blank" rel="noopener" class="btn btn-primary" style="width:100%; justify-content:center; text-decoration:none;">Открыть в TikTok ↗</a>
+        </div>
+      </div>
+      <div class="video-detail-info">
+        <div class="video-detail-title" id="vd-desc">—</div>
+        <div class="video-detail-stats">
+          <div class="detail-stat-box"><div class="detail-stat-num" id="vd-views">—</div><div class="detail-stat-label">Просмотры</div></div>
+          <div class="detail-stat-box"><div class="detail-stat-num" id="vd-likes">—</div><div class="detail-stat-label">Лайки</div></div>
+          <div class="detail-stat-box"><div class="detail-stat-num" id="vd-comments">—</div><div class="detail-stat-label">Комментарии</div></div>
+        </div>
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">Video ID</span><span class="kv-val text-mono" id="vd-id">—</span></div>
+          <div class="kv-row"><span class="kv-key">Дата загрузки</span><span class="kv-val" id="vd-date">—</span></div>
+          <div class="kv-row"><span class="kv-key">Приватность</span><span class="kv-val" id="vd-privacy">—</span></div>
+          <div class="kv-row"><span class="kv-key">Длительность</span><span class="kv-val" id="vd-duration">—</span></div>
+        </div>
+        <div style="margin-top:12px;">
+          <div class="section-title">Описание и хештеги</div>
+          <div id="vd-hashtags" style="line-height:1.8; font-size:13px;"></div>
+        </div>
+        <div style="margin-top:16px;">
+          <button class="btn btn-secondary" id="vd-deep-btn" onclick="loadDeepAnalytics()">Глубокая аналитика (~15с)</button>
+        </div>
+        <!-- Deep analytics result -->
+        <div id="vd-deep-analytics" style="display:none; margin-top:16px;">
+          <div class="section-title">Глубокая аналитика</div>
+          <div class="video-detail-stats" style="grid-template-columns: repeat(2, 1fr); gap:8px;" id="vd-deep-stats"></div>
+          <div style="margin-top:12px;" id="vd-traffic-wrap">
+            <div class="section-title" style="font-size:12px; margin-bottom:8px;">Источники трафика</div>
+            <div id="vd-traffic-list" style="font-size:13px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="videos-container">
+      <div class="video-loading">Нажмите «Загрузить видео» — браузер откроется в фоне и получит список видео (~30с)</div>
+    </div>
+  </div>
+
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const select = document.getElementById('account-select');
+  const refreshBtn = document.getElementById('refresh-btn');
+  let currentAccountId = null;
+
+  if (select) {
+    select.addEventListener('change', () => {
+      const id = select.value;
+      if (id) {
+        currentAccountId = id;
+        refreshBtn.disabled = false;
+        loadData();
+      } else {
+        currentAccountId = null;
+        refreshBtn.disabled = true;
+        show('idle-state');
+      }
+    });
+  }
+
+  function show(id) {
+    ['idle-state','loading-state','error-state','data-state'].forEach(s => {
+      const el = document.getElementById(s);
+      if (el) el.style.display = (s === id) ? 'block' : 'none';
+    });
+  }
+
+  function fmt(n) {
+    if (n === undefined || n === null) return '—';
+    if (typeof n !== 'number') return n;
+    if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n/1000).toFixed(1) + 'K';
+    return n.toString();
+  }
+
+  function tsToDate(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString('ru-RU', {day:'2-digit', month:'2-digit', year:'numeric'});
+  }
+
+  function tsToDateTime(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return d.toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit'});
+  }
+
+  function badge(text, cls) {
+    return `<span class="tag tag-${cls}">${text}</span>`;
+  }
+
+  function settingIcon(val) {
+    return val ? '<span class="tag tag-green">Да</span>' : '<span class="tag tag-red">Нет</span>';
+  }
+
+  function kvRow(key, val) {
+    return `<div class="kv-row"><span class="kv-key">${key}</span><span class="kv-val">${val}</span></div>`;
+  }
+
+  let _selectedVideoCard = null;
+
+  let _charts = {};
+
+  function loadData() {
+    if (!currentAccountId) return;
+    show('loading-state');
+    // Reset sections
+    document.getElementById('videos-section').style.display = 'none';
+    document.getElementById('analytics-section').style.display = 'none';
+    document.getElementById('videos-container').innerHTML = '<div class="video-loading">Нажмите «Загрузить видео»</div>';
+    document.getElementById('load-videos-btn').disabled = false;
+    document.getElementById('load-videos-btn').textContent = 'Загрузить видео';
+    document.getElementById('analytics-data').style.display = 'none';
+    document.getElementById('analytics-error').style.display = 'none';
+    document.getElementById('analytics-loading').style.display = 'none';
+    closeDetail();
+    fetch(`/api/accounts/${currentAccountId}/tiktok`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.error && !data.profile) {
+          show('error-state');
+          document.getElementById('error-state').textContent = 'Ошибка: ' + data.error;
+          return;
+        }
+        renderData(data);
+        show('data-state');
+        document.getElementById('videos-section').style.display = 'block';
+        document.getElementById('analytics-section').style.display = 'block';
+      })
+      .catch(err => {
+        show('error-state');
+        document.getElementById('error-state').textContent = 'Ошибка запроса: ' + err;
+      });
+  }
+
+  function loadAnalytics() {
+    if (!currentAccountId) return;
+    const btn = document.getElementById('load-analytics-btn');
+    const days = document.getElementById('days-select').value;
+    btn.disabled = true;
+    btn.textContent = 'Загружаем...';
+    document.getElementById('analytics-loading').style.display = 'block';
+    document.getElementById('analytics-data').style.display = 'none';
+    document.getElementById('analytics-error').style.display = 'none';
+    // Destroy old charts
+    Object.values(_charts).forEach(c => c.destroy());
+    _charts = {};
+
+    fetch(`/api/accounts/${currentAccountId}/analytics?days=${days}`)
+      .then(r => r.json())
+      .then(data => {
+        document.getElementById('analytics-loading').style.display = 'none';
+        if (data.error) {
+          const el = document.getElementById('analytics-error');
+          el.textContent = 'Ошибка: ' + data.error;
+          el.style.display = 'block';
+          btn.disabled = false;
+          btn.textContent = 'Повторить';
+          return;
+        }
+        renderAnalytics(data);
+        document.getElementById('analytics-data').style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Обновить';
+      })
+      .catch(err => {
+        document.getElementById('analytics-loading').style.display = 'none';
+        const el = document.getElementById('analytics-error');
+        el.textContent = 'Ошибка запроса: ' + err;
+        el.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Повторить';
+      });
+  }
+
+  function renderAnalytics(data) {
+    console.log('[analytics] renderAnalytics called, keys:', Object.keys(data));
+    console.log('[analytics] views series len:', data.views?.series?.length, 'total:', data.views?.total);
+    // Metric cards
+    const metrics = [
+      { key: 'views',        label: 'Просмотры' },
+      { key: 'followers',    label: 'Подписчики' },
+      { key: 'likes',        label: 'Лайки' },
+      { key: 'shares',       label: 'Репосты' },
+      { key: 'comments',     label: 'Комментарии' },
+      { key: 'profile_views',label: 'Просм. профиля' },
+      { key: 'new_viewers',  label: 'Новые зрители' },
+      { key: 'total_viewers',label: 'Уник. зрители' },
+    ];
+    const metricsEl = document.getElementById('analytics-metrics');
+    metricsEl.innerHTML = metrics.map(m => {
+      const d = data[m.key];
+      if (!d) return '';
+      const total = d.total != null ? fmtNum(d.total) : '—';
+      let deltaHtml = '';
+      if (d.delta != null) {
+        const sign = d.delta >= 0 ? '+' : '';
+        const cls = d.delta >= 0 ? 'pos' : 'neg';
+        const pct = d.pct_change != null ? ` (${d.delta >= 0 ? '+' : ''}${Math.round(d.pct_change)}%)` : '';
+        deltaHtml = `<div class="am-delta ${cls}">${sign}${fmtNum(d.delta)}${pct}</div>`;
+      }
+      return `<div class="am-box">
+        <div class="am-total">${total}</div>
+        <div class="am-label">${m.label}</div>
+        ${deltaHtml}
+      </div>`;
+    }).join('');
+
+    const chartDefaults = {
+      responsive: false,
+      maintainAspectRatio: false,
+      animation: { duration: 300 },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#888', maxRotation: 0, font: { size: 10 }, maxTicksLimit: 7 }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        y: { ticks: { color: '#888', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+      }
+    };
+
+    function seriesLabels(series) {
+      return (series || []).map(p => {
+        const d = String(p.date);
+        if (d.length === 8) return `${d.slice(6)}.${d.slice(4,6)}`;
+        return d;
+      });
+    }
+    function seriesValues(series) {
+      return (series || []).map(p => p.value || 0);
+    }
+
+    // Ensure canvas exists inside wrapper (re-create if "Нет данных" replaced it)
+    function ensureCanvas(id) {
+      const wrap = document.querySelector(`[data-chart="${id}"]`);
+      console.log('[analytics] ensureCanvas', id, '→ wrap:', !!wrap, 'canvas:', !!document.getElementById(id));
+      if (!wrap) return null;
+      let c = document.getElementById(id);
+      if (!c) {
+        c = document.createElement('canvas');
+        c.id = id;
+        wrap.innerHTML = '';
+        wrap.appendChild(c);
+      }
+      // Size to wrapper
+      c.width = wrap.clientWidth || wrap.offsetWidth || 400;
+      c.height = 180;
+      return c;
+    }
+
+    function noData(id) {
+      const wrap = document.querySelector(`[data-chart="${id}"]`);
+      if (wrap) wrap.innerHTML = '<div style="color:var(--text-muted);font-size:13px;text-align:center;padding-top:60px;">Нет данных</div>';
+    }
+
+    // Views chart
+    const cvViews = ensureCanvas('chart-views');
+    if (cvViews && data.views && data.views.series && data.views.series.length) {
+      _charts.views = new Chart(cvViews, {
+        type: 'line',
+        data: {
+          labels: seriesLabels(data.views.series),
+          datasets: [{ data: seriesValues(data.views.series), borderColor: '#fe2c55', backgroundColor: 'rgba(254,44,85,0.1)', fill: true, tension: 0.3, pointRadius: 2 }]
+        },
+        options: { ...chartDefaults }
+      });
+    } else { noData('chart-views'); }
+
+    // Followers chart
+    const cvFollowers = ensureCanvas('chart-followers');
+    if (cvFollowers && data.followers && data.followers.series && data.followers.series.length) {
+      _charts.followers = new Chart(cvFollowers, {
+        type: 'line',
+        data: {
+          labels: seriesLabels(data.followers.series),
+          datasets: [{ data: seriesValues(data.followers.series), borderColor: '#25f4ee', backgroundColor: 'rgba(37,244,238,0.1)', fill: true, tension: 0.3, pointRadius: 2 }]
+        },
+        options: { ...chartDefaults }
+      });
+    } else { noData('chart-followers'); }
+
+    // Likes + Shares grouped bar
+    const hasLikes = data.likes && data.likes.series && data.likes.series.length;
+    const hasShares = data.shares && data.shares.series && data.shares.series.length;
+    const cvLikes = ensureCanvas('chart-likes');
+    if (cvLikes && (hasLikes || hasShares)) {
+      const labels = hasLikes ? seriesLabels(data.likes.series) : seriesLabels(data.shares.series);
+      const datasets = [];
+      if (hasLikes) datasets.push({ label: 'Лайки', data: seriesValues(data.likes.series), backgroundColor: 'rgba(254,44,85,0.7)', borderRadius: 3 });
+      if (hasShares) datasets.push({ label: 'Репосты', data: seriesValues(data.shares.series), backgroundColor: 'rgba(37,244,238,0.7)', borderRadius: 3 });
+      _charts.likes = new Chart(cvLikes, {
+        type: 'bar',
+        data: { labels, datasets },
+        options: { ...chartDefaults, plugins: { legend: { display: datasets.length > 1, labels: { color: '#aaa', font: { size: 11 } } } } }
+      });
+    } else { noData('chart-likes'); }
+
+    // Active hours bar
+    const hourly = data.active_hours && data.active_hours.hourly;
+    const cvHours = ensureCanvas('chart-hours');
+    if (cvHours && hourly && hourly.some(v => v > 0)) {
+      const labels = Array.from({length: 24}, (_, i) => `${i}:00`);
+      _charts.hours = new Chart(cvHours, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{ data: hourly, backgroundColor: hourly.map(v => `rgba(254,44,85,${Math.min(0.2 + v / Math.max(...hourly) * 0.8, 1)})`), borderRadius: 3 }]
+        },
+        options: { ...chartDefaults, scales: { x: { ...chartDefaults.scales.x, ticks: { color: '#888', font: { size: 9 }, maxRotation: 45 } }, y: { ...chartDefaults.scales.y } } }
+      });
+    } else { noData('chart-hours'); }
+  }
+
+  function loadVideos() {
+    if (!currentAccountId) return;
+    const btn = document.getElementById('load-videos-btn');
+    btn.disabled = true;
+    btn.textContent = 'Загружаем...';
+    document.getElementById('videos-container').innerHTML = '<div class="video-loading"><div class="spinner" style="display:inline-block;"></div><br>Открываем браузер и получаем список видео, подождите ~30с...</div>';
+    closeDetail();
+    fetch(`/api/accounts/${currentAccountId}/videos`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) {
+          document.getElementById('videos-container').innerHTML = `<div class="alert alert-error">Ошибка: ${data.error}</div>`;
+          btn.disabled = false;
+          btn.textContent = 'Повторить';
+          return;
+        }
+        renderVideos(data.videos || []);
+        btn.disabled = false;
+        btn.textContent = 'Обновить видео';
+      })
+      .catch(err => {
+        document.getElementById('videos-container').innerHTML = `<div class="alert alert-error">Ошибка запроса: ${err}</div>`;
+        btn.disabled = false;
+        btn.textContent = 'Повторить';
+      });
+  }
+
+  function renderVideos(videos) {
+    const container = document.getElementById('videos-container');
+    if (!videos.length) {
+      container.innerHTML = '<div class="video-loading text-muted">Видео не найдены</div>';
+      return;
+    }
+    container.innerHTML = `
+      <div style="font-size:13px; color:var(--text-muted); margin-bottom:12px;">Найдено видео: ${videos.length}. Нажмите на видео для подробностей.</div>
+      <div class="video-grid" id="video-grid"></div>
+    `;
+    const grid = document.getElementById('video-grid');
+    videos.forEach((v, idx) => {
+      const card = document.createElement('div');
+      card.className = 'video-card';
+      card.dataset.idx = idx;
+      const thumb = v.thumbnail || '';
+      const shortDesc = (v.description || '').replace(/#\S+/g, '').trim().slice(0, 60) || v.video_id;
+      card.innerHTML = `
+        <div class="video-thumb-wrap">
+          ${thumb ? `<img src="${thumb}" alt="thumbnail" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentNode.style.background='#333';this.remove()">` : '<div style="height:100%;background:#333;display:flex;align-items:center;justify-content:center;color:#666;font-size:24px;">▶</div>'}
+          ${v.duration ? `<div class="video-duration">${v.duration}</div>` : ''}
+          ${v.privacy && v.privacy !== 'Public' ? `<div class="video-privacy-badge">${v.privacy === 'Only me' ? '🔒' : v.privacy}</div>` : ''}
+        </div>
+        <div class="video-card-body">
+          <div class="video-desc">${shortDesc || v.video_id}</div>
+          <div class="video-stats">
+            <span class="video-stat-item">👁 ${fmtNum(v.views)}</span>
+            <span class="video-stat-item">❤️ ${fmtNum(v.likes)}</span>
+            <span class="video-stat-item">💬 ${fmtNum(v.comments)}</span>
+          </div>
+        </div>
+      `;
+      card.addEventListener('click', () => openDetail(v, card));
+      grid.appendChild(card);
+    });
+    window._videoList = videos;
+  }
+
+  function fmtNum(n) {
+    if (!n && n !== 0) return '—';
+    if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n/1000).toFixed(1) + 'K';
+    return n.toString();
+  }
+
+  let _currentVideoId = null;
+
+  function _resetDeepAnalytics() {
+    document.getElementById('vd-deep-analytics').style.display = 'none';
+    const btn = document.getElementById('vd-deep-btn');
+    btn.disabled = false;
+    btn.style.display = '';
+    btn.textContent = 'Глубокая аналитика (~15с)';
+  }
+
+  async function loadDeepAnalytics() {
+    if (!_currentVideoId || !currentAccountId) return;
+    const btn = document.getElementById('vd-deep-btn');
+    btn.disabled = true;
+    btn.textContent = 'Загрузка...';
+    try {
+      const resp = await fetch(`/api/accounts/${currentAccountId}/videos/${_currentVideoId}/analytics`);
+      const data = await resp.json();
+      if (data.error) {
+        btn.textContent = 'Ошибка: ' + data.error;
+        btn.disabled = false;
+        return;
+      }
+      const statsMap = [
+        ['Просмотры', data.views],
+        ['Время воспроизведения', data.total_play_time],
+        ['Среднее время просмотра', data.avg_watch_time],
+        ['Досмотрели до конца', data.watched_full_pct],
+        ['Новые подписчики', data.new_followers],
+        ['Дропаут удержания', data.retention_dropout ? data.retention_dropout + ' — большинство ушли' : null],
+      ];
+      document.getElementById('vd-deep-stats').innerHTML = statsMap
+        .filter(([, v]) => v != null)
+        .map(([label, val]) => `
+          <div class="detail-stat-box">
+            <div class="detail-stat-num" style="font-size:14px;">${val}</div>
+            <div class="detail-stat-label">${label}</div>
+          </div>`)
+        .join('');
+      const traffic = data.traffic_sources || {};
+      const trafficKeys = Object.keys(traffic);
+      const trafficWrap = document.getElementById('vd-traffic-wrap');
+      if (trafficKeys.length > 0) {
+        document.getElementById('vd-traffic-list').innerHTML = trafficKeys.map(k =>
+          `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);">
+            <span>${k}</span><span style="font-weight:600;">${traffic[k]}</span>
+          </div>`
+        ).join('');
+        trafficWrap.style.display = 'block';
+      } else {
+        trafficWrap.style.display = 'none';
+      }
+      document.getElementById('vd-deep-analytics').style.display = 'block';
+      btn.style.display = 'none';
+    } catch (e) {
+      btn.textContent = 'Ошибка загрузки';
+      btn.disabled = false;
+    }
+  }
+
+  function openDetail(v, card) {
+    _currentVideoId = v.video_id || null;
+    _resetDeepAnalytics();
+    // Deselect previous
+    if (_selectedVideoCard) _selectedVideoCard.classList.remove('selected');
+    _selectedVideoCard = card;
+    card.classList.add('selected');
+    // Scroll to panel
+    const panel = document.getElementById('video-detail-panel');
+    panel.classList.add('open');
+
+    const vdThumb = document.getElementById('vd-thumb');
+    vdThumb.referrerPolicy = 'no-referrer';
+    vdThumb.src = v.thumbnail || '';
+    document.getElementById('vd-link').href = v.url || '#';
+    document.getElementById('vd-id').textContent = v.video_id || '—';
+    document.getElementById('vd-date').textContent = v.date || '—';
+    document.getElementById('vd-privacy').textContent = v.privacy || '—';
+    document.getElementById('vd-duration').textContent = v.duration || '—';
+    document.getElementById('vd-views').textContent = fmtNum(v.views);
+    document.getElementById('vd-likes').textContent = fmtNum(v.likes);
+    document.getElementById('vd-comments').textContent = fmtNum(v.comments);
+
+    // Description + hashtags
+    const desc = v.description || '';
+    const hashtagsEl = document.getElementById('vd-hashtags');
+    const parts = desc.split(/(#\S+)/g);
+    hashtagsEl.innerHTML = parts.map(p => p.startsWith('#')
+      ? `<a href="https://www.tiktok.com/tag/${p.slice(1)}" target="_blank" class="hashtag">${p}</a> `
+      : `<span>${p}</span>`
+    ).join('');
+
+    // Title (non-hashtag part)
+    const plainDesc = desc.replace(/#\S+/g, '').trim();
+    document.getElementById('vd-desc').textContent = plainDesc || desc || '—';
+
+    panel.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  }
+
+  function closeDetail() {
+    const panel = document.getElementById('video-detail-panel');
+    if (panel) panel.classList.remove('open');
+    if (_selectedVideoCard) {
+      _selectedVideoCard.classList.remove('selected');
+      _selectedVideoCard = null;
+    }
+    _resetDeepAnalytics();
+    _currentVideoId = null;
+  }
+
+  function renderData(data) {
+    const p = data.profile || {};
+    const s = data.settings || {};
+    const us = data.upload_stats || {};
+
+    // Fetched at
+    if (data.fetched_at) {
+      document.getElementById('fetched-at').textContent = 'Обновлено: ' + tsToDateTime(data.fetched_at);
+    }
+
+    // Avatar
+    const avatarWrap = document.getElementById('avatar-wrap');
+    if (p.avatar_url) {
+      avatarWrap.innerHTML = `<img class="profile-avatar" src="${p.avatar_url}" onerror="this.parentNode.innerHTML='<div class=\\'profile-avatar-placeholder\\'>👤</div>'" />`;
+    }
+
+    // Name & ID
+    document.getElementById('p-nickname').textContent = p.nickname || '—';
+    document.getElementById('p-unique-id').textContent = p.unique_id || '—';
+    document.getElementById('p-user-id').textContent = p.user_id || '—';
+
+    // TikTok link
+    if (p.unique_id) {
+      document.getElementById('p-tiktok-link').href = `https://www.tiktok.com/@${p.unique_id}`;
+    }
+
+    // Badges
+    const badgesEl = document.getElementById('p-badges');
+    let badges = [];
+    if (p.is_verified) badges.push(badge('Верифицирован', 'blue'));
+    if (p.is_private) badges.push(badge('Приватный', 'yellow'));
+    if (p.has_cert) badges.push(badge('Сертификат', 'green'));
+    if (p.region) badges.push(badge(p.region, ''));
+    badgesEl.innerHTML = badges.join('');
+
+    // Stats
+    document.getElementById('s-followers').textContent = fmt(p.followers);
+
+    // Profile details
+    document.getElementById('p-region').textContent = [p.region, p.registration_country ? `(${p.registration_country.toUpperCase()})` : ''].filter(Boolean).join(' ') || '—';
+    document.getElementById('p-language').textContent = p.language || '—';
+    document.getElementById('p-created').textContent = tsToDate(p.created_at_ts);
+    const bioEl = document.getElementById('p-bio');
+    bioEl.textContent = p.bio || '—';
+    bioEl.style.fontStyle = p.bio ? 'normal' : 'italic';
+
+    // Upload stats
+    document.getElementById('us-total').textContent = us.total ?? '—';
+    document.getElementById('us-success').textContent = us.success ?? '—';
+    document.getElementById('us-failed').textContent = us.failed ?? '—';
+
+    // Recent uploads table
+    const tbody = document.getElementById('recent-uploads-body');
+    const recent = (us.recent || []).slice(0, 8);
+    if (recent.length > 0) {
+      tbody.innerHTML = recent.map(t => `
+        <tr>
+          <td class="upload-row">${t.filename || '—'}</td>
+          <td><span class="badge badge-${t.status}">${t.status}</span></td>
+          <td class="text-muted" style="font-size:12px;">${t.created_at ? t.created_at.slice(0,16) : '—'}</td>
+        </tr>
+      `).join('');
+    } else {
+      tbody.innerHTML = '<tr><td colspan="3" class="text-muted" style="text-align:center;padding:16px;">Нет загрузок</td></tr>';
+    }
+
+    // Creator settings
+    const settingsList = document.getElementById('settings-list');
+    const maxDur = s.max_video_duration_sec ? (s.max_video_duration_sec >= 3600 ? '1 час' : `${s.max_video_duration_sec}с`) : '—';
+    settingsList.innerHTML = [
+      kvRow('Макс. длина видео', maxDur),
+      kvRow('Длинные видео', settingIcon(s.longvideo_permission)),
+      kvRow('Расписание публикаций', settingIcon(s.schedule_enable)),
+      kvRow('Массовая загрузка', settingIcon(s.bulk_upload_enable)),
+      kvRow('Плейлисты', settingIcon(s.playlist_enable)),
+      kvRow('Облачные черновики', settingIcon(s.draft_cloud_enable)),
+      kvRow('Лимит черновиков', s.draft_limitation || '—'),
+      kvRow('Комментарии', s.comment_setting_label || '—'),
+      kvRow('Дуэты', s.duet_setting_label || '—'),
+      kvRow('Stitch', s.stitch_setting_label || '—'),
+      kvRow('Геофенсинг', settingIcon(s.geofencing_enabled)),
+      kvRow('Разделение видео (макс.)', s.video_split_count_limit || '—'),
+    ].join('');
+  }
+
+  // Auto-select if only one account
+  if (select && select.options.length === 2) {
+    select.selectedIndex = 1;
+    select.dispatchEvent(new Event('change'));
+  }
+</script>
+{% endblock %}

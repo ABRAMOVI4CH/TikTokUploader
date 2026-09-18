@@ -8,6 +8,7 @@ Browsers are created on demand and closed after each operation.
 import glob as globmod
 import logging
 import os
+import re
 import shutil
 import signal
 import threading
@@ -110,7 +111,19 @@ class TikTokUploader:
         driver_path = os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver")
         service = Service(executable_path=driver_path)
 
-        driver = webdriver.Chrome(service=service, options=options)
+        try:
+            driver = webdriver.Chrome(service=service, options=options)
+        except WebDriverException as exc:
+            # If Chrome crashed (e.g. X display not available), retry in headless mode
+            if "Chrome instance exited" in str(exc) or "session not created" in str(exc):
+                logger.warning("Chrome failed with display mode, retrying headless: %s", exc)
+                options2 = self._build_options(profile_dir)
+                options2.add_argument("--headless=new")
+                service2 = Service(executable_path=driver_path)
+                driver = webdriver.Chrome(service=service2, options=options2)
+            else:
+                raise
+
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
@@ -276,6 +289,178 @@ class TikTokUploader:
         if os.path.isdir(profile_dir):
             shutil.rmtree(profile_dir, ignore_errors=True)
             logger.info("Profile deleted for account %d.", account_id)
+
+    # ------------------------------------------------------------------
+    # Video list
+    # ------------------------------------------------------------------
+
+    def get_video_list(self, account_id: int, cookies: list) -> list:
+        """Scrape the video list from TikTok Studio content page using Selenium."""
+        profile_dir = self._profile_dir(account_id)
+        driver = self._create_driver(profile_dir)
+        try:
+            driver.get("https://www.tiktok.com/tiktokstudio/content")
+            time.sleep(6)
+
+            if "login" in driver.current_url.lower() or not self._is_logged_in(driver):
+                ok = self.inject_cookies(driver, cookies)
+                if not ok:
+                    return []
+                driver.get("https://www.tiktok.com/tiktokstudio/content")
+                time.sleep(6)
+
+            raw = driver.execute_script("""
+                const videoLinks = [...document.querySelectorAll('a[href*="/video/"]')];
+                const videos = videoLinks.map(link => {
+                    const videoId = link.href.match(/\\/video\\/(\\d+)/)?.[1];
+                    let container = link;
+                    for (let i = 0; i < 8; i++) {
+                        container = container.parentElement;
+                        if (!container) break;
+                        const txt = container.innerText || '';
+                        if (txt.match(/\\d{1,3}(,\\d{3})*/) && txt.split('\\n').length > 3) break;
+                    }
+                    const img = container?.querySelector('img[src*="tiktok"]');
+                    const allText = container?.innerText?.split('\\n').map(t => t.trim()).filter(t => t) || [];
+                    return { videoId, url: link.href, thumbnail: img?.src || null, textContent: allText };
+                }).filter(d => d && d.videoId);
+                const seen = new Set();
+                return videos.filter(d => !seen.has(d.videoId) && seen.add(d.videoId));
+            """) or []
+
+            def parse_stat(t: str):
+                """Parse a stat string like '55K', '1,310', '1.2M', '289' → int."""
+                t = t.strip().replace(',', '')
+                if t.endswith('K') or t.endswith('k'):
+                    try: return int(float(t[:-1]) * 1_000)
+                    except ValueError: return None
+                if t.endswith('M') or t.endswith('m'):
+                    try: return int(float(t[:-1]) * 1_000_000)
+                    except ValueError: return None
+                try: return int(t)
+                except ValueError: return None
+
+            result = []
+            months = ('Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec')
+            for v in raw:
+                text = v.get("textContent", [])
+                duration = ""
+                description = ""
+                date_str = ""
+                privacy = ""
+                stats = []
+
+                for t in text:
+                    if not duration and len(t) <= 5 and t.count(':') == 1 and all(c.isdigit() or c == ':' for c in t):
+                        duration = t
+                    elif not date_str and any(m in t for m in months) and (',' in t or ':' in t):
+                        date_str = t
+                    elif t in ('Only me', 'Public', 'Friends', 'Followers only'):
+                        privacy = t
+                    elif re.match(r'^[\d.,]+[KkMm]?$', t):
+                        val = parse_stat(t)
+                        if val is not None:
+                            stats.append(val)
+
+                desc_candidates = [t for t in text if '#' in t or (len(t) > 15 and not any(m in t for m in months) and t.replace(',', '').replace(' ', '').replace(':', '').replace('.', '').isalnum() is False)]
+                if not desc_candidates:
+                    desc_candidates = [t for t in text if len(t) > 10 and not any(m in t for m in months) and not t.replace(',', '').isdigit() and t != duration and t != privacy]
+                if desc_candidates:
+                    description = max(desc_candidates, key=len)
+
+                result.append({
+                    "video_id": v.get("videoId"),
+                    "url": v.get("url"),
+                    "thumbnail": v.get("thumbnail"),
+                    "duration": duration,
+                    "description": description,
+                    "date": date_str,
+                    "privacy": privacy,
+                    "views": stats[0] if len(stats) > 0 else 0,
+                    "likes": stats[1] if len(stats) > 1 else 0,
+                    "comments": stats[2] if len(stats) > 2 else 0,
+                })
+            return result
+        finally:
+            self._close_driver(driver)
+
+    def get_video_deep_analytics(self, account_id: int, video_id: str, cookies: list) -> dict:
+        """Scrape per-video deep analytics from TikTok Studio analytics page using Selenium."""
+        profile_dir = self._profile_dir(account_id)
+        driver = self._create_driver(profile_dir)
+        try:
+            url = f"https://www.tiktok.com/tiktokstudio/analytics/{video_id}"
+            driver.get(url)
+            time.sleep(5)
+
+            if "login" in driver.current_url.lower() or not self._is_logged_in(driver):
+                ok = self.inject_cookies(driver, cookies)
+                if not ok:
+                    return {"error": "Cookie injection failed"}
+                driver.get(url)
+                time.sleep(5)
+
+            # Wait for the page to render stat labels
+            try:
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, "//*[normalize-space(text())='Total play time' or normalize-space(text())='Video views']")
+                    )
+                )
+                time.sleep(2)
+            except TimeoutException:
+                logger.warning("Timed out waiting for analytics page to load for video %s", video_id)
+
+            data = driver.execute_script("""
+                const allEls = [...document.querySelectorAll('*')].filter(
+                    el => el.children.length === 0 && el.innerText && el.innerText.trim()
+                );
+
+                function getStat(label) {
+                    const el = allEls.find(e => e.innerText.trim() === label);
+                    if (!el) return null;
+                    const gp = el.parentElement && el.parentElement.parentElement;
+                    if (!gp) return null;
+                    const lines = gp.innerText.trim().split('\\n').map(l => l.trim()).filter(l => l);
+                    return lines.find(l => l !== label) || null;
+                }
+
+                const trafficLabels = ['For You', 'Personal profile', 'Other', 'Following',
+                                       'Sound', 'Search', 'Hashtag', 'Direct message'];
+                const traffic = {};
+                for (const label of trafficLabels) {
+                    const el = allEls.find(e => e.innerText.trim() === label);
+                    if (!el) continue;
+                    const gp = el.parentElement && el.parentElement.parentElement;
+                    if (!gp) continue;
+                    const lines = gp.innerText.trim().split('\\n').map(l => l.trim()).filter(l => l);
+                    const val = lines.find(l => l !== label && (l.includes('%') || l.startsWith('<')));
+                    if (val) traffic[label] = val;
+                }
+
+                let retentionDropout = null;
+                const retEl = allEls.find(e => e.innerText.trim() === 'Retention rate');
+                if (retEl) {
+                    let ancestor = retEl.parentElement && retEl.parentElement.parentElement;
+                    if (ancestor) {
+                        const m = ancestor.innerText.match(/Most viewers stopped watching at (\\d+:\\d+)/);
+                        if (m) retentionDropout = m[1];
+                    }
+                }
+
+                return {
+                    views: getStat('Video views'),
+                    total_play_time: getStat('Total play time'),
+                    avg_watch_time: getStat('Average watch time'),
+                    watched_full_pct: getStat('Watched full video'),
+                    new_followers: getStat('New followers'),
+                    traffic_sources: traffic,
+                    retention_dropout: retentionDropout,
+                };
+            """)
+            return data or {}
+        finally:
+            self._close_driver(driver)
 
     def download_avatar(self, avatar_url: str, save_path: str) -> bool:
         if not avatar_url:

@@ -23,7 +23,21 @@ logging.basicConfig(
 logger = logging.getLogger("web.app")
 
 app = Flask(__name__, template_folder="templates")
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
+_secret_key_file = os.path.join(os.environ.get("DB_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".flask_secret")
+if not os.environ.get("FLASK_SECRET_KEY"):
+    if os.path.exists(_secret_key_file):
+        with open(_secret_key_file) as _f:
+            _stored_key = _f.read().strip()
+    else:
+        _stored_key = os.urandom(24).hex()
+        try:
+            with open(_secret_key_file, "w") as _f:
+                _f.write(_stored_key)
+        except Exception:
+            pass
+    app.secret_key = _stored_key
+else:
+    app.secret_key = os.environ["FLASK_SECRET_KEY"]
 
 API_BASE = os.environ.get("API_BASE_URL", "http://127.0.0.1:5000")
 DEBUG_MODE = os.environ.get("DEBUG", "false").lower() == "true"
@@ -160,6 +174,14 @@ def accounts():
     return render_template("accounts.html", accounts=accounts_list)
 
 
+@app.route("/analytics")
+@login_required
+def analytics():
+    accounts_data, _ = _api("get", "/api/accounts")
+    accounts_list = accounts_data if isinstance(accounts_data, list) else []
+    return render_template("analytics.html", accounts=accounts_list)
+
+
 # ------------------------------------------------------------------
 # API proxies
 # ------------------------------------------------------------------
@@ -198,6 +220,31 @@ def proxy_delete_account(account_id):
     return _proxy("delete", f"/api/accounts/{account_id}")
 
 
+@app.route("/api/accounts/<int:account_id>/tiktok")
+@login_required
+def proxy_tiktok_data(account_id):
+    return _proxy("get", f"/api/accounts/{account_id}/tiktok", timeout=30)
+
+
+@app.route("/api/accounts/<int:account_id>/videos")
+@login_required
+def proxy_video_list(account_id):
+    return _proxy("get", f"/api/accounts/{account_id}/videos", timeout=120)
+
+
+@app.route("/api/accounts/<int:account_id>/videos/<video_id>/analytics")
+@login_required
+def proxy_video_analytics(account_id, video_id):
+    return _proxy("get", f"/api/accounts/{account_id}/videos/{video_id}/analytics", timeout=60)
+
+
+@app.route("/api/accounts/<int:account_id>/analytics")
+@login_required
+def proxy_analytics(account_id):
+    days = request.args.get("days", "28")
+    return _proxy("get", f"/api/accounts/{account_id}/analytics", params={"days": days}, timeout=30)
+
+
 @app.route("/api/clipboard", methods=["POST"])
 def proxy_clipboard():
     return _proxy("post", "/api/clipboard", json=request.get_json(force=True))
@@ -206,6 +253,43 @@ def proxy_clipboard():
 @app.route("/static/avatars/<path:filename>")
 def proxy_avatar(filename):
     return _proxy("get", f"/static/avatars/{filename}")
+
+
+@app.route("/api/proxy/thumb")
+@login_required
+def proxy_thumb():
+    import urllib.request
+    url = request.args.get("url", "").strip()
+    account_id = request.args.get("aid", "")
+    if not url or not url.startswith("https://"):
+        return Response("bad url", status=400)
+    # Get account cookies if account_id provided
+    cookie_header = ""
+    if account_id:
+        acc_data, _ = _api("get", f"/api/accounts/{account_id}")
+        cookies = acc_data.get("cookies") or []
+        cookie_header = "; ".join(
+            f"{c['name']}={c['value']}" for c in cookies if c.get("name") and c.get("value")
+        )
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.tiktok.com/tiktokstudio/content",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+        }
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read()
+            ct = resp.headers.get("Content-Type", "image/jpeg")
+        return Response(data, content_type=ct, headers={"Cache-Control": "public, max-age=86400"})
+    except Exception as exc:
+        return Response(f"proxy error: {exc}", status=502)
 
 
 if __name__ == "__main__":
